@@ -148,11 +148,16 @@ public struct Harness {
         StrUtil.append(mut s, "    print(f'recorded {len(cases)} cases to {cases_path}')\n")?;
         StrUtil.append(mut s, "elif mode == 'diff':\n")?;
         StrUtil.append(mut s, "    out_json = sys.argv[5]\n")?;
+        StrUtil.append(mut s, "    known_path = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else ''\n")?;
+        StrUtil.append(
+            mut s,
+            "    known = [json.loads(l) for l in open(known_path, encoding='utf-8') if l.strip()] if known_path and os.path.exists(known_path) else []\n",
+        )?;
         StrUtil.append(
             mut s,
             "    cases = [json.loads(l) for l in open(cases_path, encoding='utf-8') if l.strip()]\n",
         )?;
-        StrUtil.append(mut s, "    passed, failed, mismatches = 0, 0, []\n")?;
+        StrUtil.append(mut s, "    passed, known_ok, failed, mismatches = 0, 0, 0, []\n")?;
         StrUtil.append(mut s, "    for c in cases:\n")?;
         StrUtil.append(mut s, "        spec = by_name.get(c['fn'])\n")?;
         StrUtil.append(mut s, "        if not spec:\n")?;
@@ -167,6 +172,11 @@ public struct Harness {
         StrUtil.append(mut s, "        exp = {'error': c['error']} if 'error' in c else {'ok': c.get('ok')}\n")?;
         StrUtil.append(mut s, "        if json.dumps(got, sort_keys=True) == json.dumps(exp, sort_keys=True):\n")?;
         StrUtil.append(mut s, "            passed += 1\n")?;
+        StrUtil.append(
+            mut s,
+            "        elif any(k.get('fn') == c['fn'] and json.dumps(k.get('args'), sort_keys=True) == json.dumps(c['args'], sort_keys=True) and ('actual' not in k or json.dumps(k['actual'], sort_keys=True) == json.dumps(got, sort_keys=True)) for k in known):\n",
+        )?;
+        StrUtil.append(mut s, "            known_ok += 1\n")?;
         StrUtil.append(mut s, "        else:\n")?;
         StrUtil.append(mut s, "            failed += 1\n")?;
         StrUtil.append(
@@ -175,10 +185,13 @@ public struct Harness {
         )?;
         StrUtil.append(
             mut s,
-            "    summary = {'total': len(cases), 'passed': passed, 'failed': failed, 'mismatches': mismatches}\n",
+            "    summary = {'total': len(cases), 'passed': passed, 'known_diffs': known_ok, 'failed': failed, 'mismatches': mismatches}\n",
         )?;
         StrUtil.append(mut s, "    json.dump(summary, open(out_json, 'w', encoding='utf-8'), indent=2)\n")?;
-        StrUtil.append(mut s, "    print(f'{passed}/{len(cases)} cases matched ({failed} failed)')\n")?;
+        StrUtil.append(
+            mut s,
+            "    print(f'{passed}/{len(cases)} cases matched ({known_ok} known diffs, {failed} failed)')\n",
+        )?;
         StrUtil.append(mut s, "    sys.exit(0 if failed == 0 else 1)\n")?;
         StrUtil.append(mut s, "elif mode == 'bench':\n")?;
         StrUtil.append(mut s, "    port_lib_path, out_json, out_txt = sys.argv[5], sys.argv[6], sys.argv[7]\n")?;
@@ -632,6 +645,7 @@ public struct Harness {
         let driverPath = Harness.writeDriver(pkgDir)?;
         let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
         let diffJson = StrUtil.joinPath(workDir.view(), "diff.json")?;
+        let knownDiffs = StrUtil.joinPath(pkgDir, "known-diffs.jsonl")?;
 
         var pyArgs = Vector<StringView>.create();
         match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
@@ -640,6 +654,7 @@ public struct Harness {
         match (pyArgs.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(diffJson.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(knownDiffs.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
 
         let ran = match (Process.capture("python3", pyArgs, null)) {
             Ok(out) => out,

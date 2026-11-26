@@ -1,0 +1,129 @@
+// `report`: generate a Markdown migration status report across one or more ported packages.
+
+public struct Report {
+    fn countNonEmptyLines(text: StringView) -> u64 {
+        let bytes = text.bytes();
+        var count: u64 = 0;
+        var hasContent = false;
+        for (i in 0..bytes.length) {
+            let b = bytes[i];
+            if (b == 10) {
+                if (hasContent) {
+                    count += 1;
+                    hasContent = false;
+                }
+            } else if (b != 32 && b != 9 && b != 13) {
+                hasContent = true;
+            }
+        }
+        if (hasContent) {
+            count += 1;
+        }
+        return count;
+    }
+
+    public fn formatPackageRow(pkgDir: StringView) -> Result<String, AppError> {
+        let manifestPath = StrUtil.joinPath(pkgDir, "ceesafe-anything.json")?;
+        let manifestText = FsUtil.readText(manifestPath.view())?;
+        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+            Some(n) => n,
+            null => StrUtil.cloneView("port")?,
+        };
+        let unit = match (StrUtil.jsonStringField(manifestText.view(), "unit")?) {
+            Some(u) => u,
+            null => StrUtil.cloneView("-")?,
+        };
+
+        let srcDir = StrUtil.joinPath(pkgDir, "src")?;
+        let portPath = StrUtil.joinPath(srcDir.view(), "port.cee")?;
+        let portStatus = match (FsUtil.readText(portPath.view())) {
+            Ok(portSrc) => if (Gate.countStubs(portSrc.view()) == 0) "ported" else "stubs",
+            Err(_) => "missing",
+        };
+
+        let casesPath = StrUtil.joinPath(pkgDir, "cases.jsonl")?;
+        let casesCount = match (FsUtil.readText(casesPath.view())) {
+            Ok(txt) => Report.countNonEmptyLines(txt.view()),
+            Err(_) => 0,
+        };
+
+        let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
+        let diffPath = StrUtil.joinPath(workDir.view(), "diff.json")?;
+        let diffStatus = match (FsUtil.readText(diffPath.view())) {
+            Ok(txt) => if (StrUtil.contains(txt.view(), "\"failed\": 0")) "pass" else "fail",
+            Err(_) => "-",
+        };
+
+        let benchPath = StrUtil.joinPath(workDir.view(), "bench.txt")?;
+        let benchStatus = if (FsUtil.fileExists(benchPath.view())) "recorded" else "-";
+
+        let cutDir = StrUtil.joinPath(pkgDir, "cutover")?;
+        let linkPath = StrUtil.joinPath(cutDir.view(), "link.txt")?;
+        let cutStatus = if (FsUtil.fileExists(linkPath.view())) "ready" else "-";
+
+        var row = String.create();
+        StrUtil.append(mut row, "| ")?;
+        StrUtil.append(mut row, pkgName.view())?;
+        StrUtil.append(mut row, " | `")?;
+        StrUtil.append(mut row, unit.view())?;
+        StrUtil.append(mut row, "` | ")?;
+        StrUtil.append(mut row, portStatus)?;
+        StrUtil.append(mut row, " | ")?;
+        StrUtil.appendNum(mut row, casesCount)?;
+        StrUtil.append(mut row, " | ")?;
+        StrUtil.append(mut row, diffStatus)?;
+        StrUtil.append(mut row, " | ")?;
+        StrUtil.append(mut row, benchStatus)?;
+        StrUtil.append(mut row, " | ")?;
+        StrUtil.append(mut row, cutStatus)?;
+        StrUtil.append(mut row, " |\n")?;
+        return Ok(row);
+    }
+
+    fn scanDir(dir: StringView, out: borrow mut String, found: borrow mut u64) -> Result<void, AppError> {
+        let entries = match (Directory.list(dir)) {
+            Ok(list) => list,
+            Err(_) => { return Ok(); },
+        };
+        for (i in 0..entries.length) {
+            let child = StrUtil.joinPath(dir, entries[i].view())?;
+            let manifest = StrUtil.joinPath(child.view(), "ceesafe-anything.json")?;
+            if (FsUtil.fileExists(manifest.view())) {
+                let row = Report.formatPackageRow(child.view())?;
+                StrUtil.append(mut out, row.view())?;
+                found += 1;
+            }
+        }
+        return Ok();
+    }
+
+    public fn run(targetDir: StringView) -> Result<String, AppError> {
+        var rows = String.create();
+        var found: u64 = 0;
+        let directManifest = StrUtil.joinPath(targetDir, "ceesafe-anything.json")?;
+        if (FsUtil.fileExists(directManifest.view())) {
+            let row = Report.formatPackageRow(targetDir)?;
+            StrUtil.append(mut rows, row.view())?;
+            found = 1;
+        } else {
+            Report.scanDir(targetDir, mut rows, mut found)?;
+            let ceesafeSub = StrUtil.joinPath(targetDir, "ceesafe")?;
+            if (FsUtil.fileExists(ceesafeSub.view())) {
+                Report.scanDir(ceesafeSub.view(), mut rows, mut found)?;
+            }
+        }
+        if (found == 0) {
+            var empty = String.create();
+            StrUtil.append(mut empty, "No ported CeeSafe packages found under ")?;
+            StrUtil.append(mut empty, targetDir)?;
+            StrUtil.append(mut empty, "\n")?;
+            return Ok(empty);
+        }
+        var out = String.create();
+        StrUtil.append(mut out, "# CeeSafe Migration Report\n\n")?;
+        StrUtil.append(mut out, "| Package | Unit | Port | Cases | Diff | Bench | Cutover |\n")?;
+        StrUtil.append(mut out, "|---|---|---|---|---|---|---|\n")?;
+        StrUtil.append(mut out, rows.view())?;
+        return Ok(out);
+    }
+}

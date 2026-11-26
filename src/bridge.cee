@@ -461,4 +461,55 @@ public struct Bridge {
         }
         return Ok(summary);
     }
+
+    public fn refresh(pkgDir: StringView) -> Result<String, AppError> {
+        let manifestPath = StrUtil.joinPath(pkgDir, "ceesafe-anything.json")?;
+        let manifestText = FsUtil.readText(manifestPath.view())?;
+        let root = match (StrUtil.jsonStringField(manifestText.view(), "root")?) {
+            Some(r) => r,
+            null => { return Err(AppError.InvalidArg); },
+        };
+        let unit = match (StrUtil.jsonStringField(manifestText.view(), "unit")?) {
+            Some(u) => u,
+            null => { return Err(AppError.InvalidArg); },
+        };
+        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+            Some(n) => n,
+            null => StrUtil.cloneView("port")?,
+        };
+
+        let unitPath = StrUtil.joinPath(root.view(), unit.view())?;
+        let lang = Harness.detectUnitLang(unit.view());
+        let extracted = match (FsUtil.readText(unitPath.view())) {
+            Ok(src) => Parser.extractFunctions(lang, src.view())?,
+            Err(_) => Vector<FnSpec>.create(),
+        };
+        let fns = if (extracted.length > 0) extracted else Bridge.defaultExports()?;
+
+        let srcDir = StrUtil.joinPath(pkgDir, "src")?;
+        FsUtil.ensureDir(srcDir.view())?;
+        let incDir = StrUtil.joinPath(pkgDir, "include")?;
+        FsUtil.ensureDir(incDir.view())?;
+
+        let bridgePath = StrUtil.joinPath(srcDir.view(), "bridge.cee")?;
+        let bridgeText = Bridge.buildBridgeCee(unit.view(), pkgName.view(), fns)?;
+        FsUtil.writeText(bridgePath.view(), bridgeText.view())?;
+
+        var hdrName = StrUtil.cloneView(pkgName.view())?;
+        StrUtil.append(mut hdrName, ".h")?;
+        let hdrPath = StrUtil.joinPath(incDir.view(), hdrName.view())?;
+        let hdrText = Bridge.buildHeader(unit.view(), pkgName.view(), fns)?;
+        FsUtil.writeText(hdrPath.view(), hdrText.view())?;
+
+        let newManifest = Bridge.buildManifestJson(root.view(), unit.view(), pkgName.view(), fns)?;
+        FsUtil.writeText(manifestPath.view(), newManifest.view())?;
+
+        var summary = String.create();
+        StrUtil.append(mut summary, "Refreshed ")?;
+        StrUtil.append(mut summary, pkgDir)?;
+        StrUtil.append(mut summary, " (")?;
+        StrUtil.appendNum(mut summary, fns.length as u64)?;
+        StrUtil.append(mut summary, " exported function(s); src/port.cee untouched)\n")?;
+        return Ok(summary);
+    }
 }

@@ -8,6 +8,7 @@ fn printUsage() {
     Console.writeLine("  ceesafe-anything setup [claude|codex|cursor]  Print MCP configuration for your coding agent");
     Console.writeLine("  ceesafe-anything analyze <root> [--json]      Map repository units, LOC, and porting risks");
     Console.writeLine("  ceesafe-anything bridge <root> <unit> [out]   Scaffold a CeeSafe C-ABI library package");
+    Console.writeLine("  ceesafe-anything refresh <pkg>                Regenerate bridge.cee, header, and manifest");
     Console.writeLine("  ceesafe-anything record <pkg> [inputs.jsonl]  Record original behavior into cases.jsonl");
     Console.writeLine("  ceesafe-anything build <pkg>                  Emit C with ceesafec and link a shared library");
     Console.writeLine("  ceesafe-anything diff <pkg>                   Replay cases.jsonl against the CeeSafe library");
@@ -22,6 +23,9 @@ fn printUsage() {
     );
     Console.writeLine(
         "  ceesafe-anything gate <pkg>                   Run fmt, check, test, stub, unsafe, build, and diff gates",
+    );
+    Console.writeLine(
+        "  ceesafe-anything report [dir]                 Print a Markdown migration report across ported packages",
     );
     Console.writeLine("  ceesafe-anything lookup <lang> <dep>          Look up the CeeSafe library equivalent");
     Console.writeLine("  ceesafe-anything mcp                          Start the stdio MCP server");
@@ -97,6 +101,16 @@ fn main() -> i32 {
         };
         let outOpt = argAt(4);
         match (Bridge.run(root, unit, outOpt)) {
+            Ok(msg) => { Console.write(msg.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "refresh") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Bridge.refresh(pkg)) {
             Ok(msg) => { Console.write(msg.view()); return 0; }
             Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
         }
@@ -188,6 +202,16 @@ fn main() -> i32 {
         };
         match (Gate.run(pkg)) {
             Ok(passed) => { return if (passed) 0 else 1; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "report") {
+        let target = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Report.run(target)) {
+            Ok(md) => { Console.write(md.view()); return 0; }
             Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
         }
     }

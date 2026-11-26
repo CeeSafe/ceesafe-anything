@@ -136,7 +136,15 @@ public struct Mcp {
             )?;
             StrUtil.append(
                 mut out,
+                "{\"name\":\"refresh\",\"description\":\"Regenerate bridge.cee, header, and manifest without modifying src/port.cee\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
                 "{\"name\":\"cutover\",\"description\":\"Generate swap-in shim routing callers to the CeeSafe library\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"},\"apply\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"report\",\"description\":\"Generate a Markdown migration status report across ported packages\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}},\"required\":[\"dir\"]}},",
             )?;
             StrUtil.append(
                 mut out,
@@ -254,6 +262,17 @@ public struct Mcp {
                     null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
                 }
             }
+            if (name.view() == "refresh") {
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Bridge.refresh(pkg.view())) {
+                            Ok(msg) => { return Ok(Some(Mcp.jsonToolText(id.view(), msg.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
             if (name.view() == "cutover") {
                 let applyOpt = StrUtil.jsonStringField(trimmed, "apply")?;
                 let apply = match (applyOpt) {
@@ -268,6 +287,17 @@ public struct Mcp {
                         }
                     }
                     null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "report") {
+                match (StrUtil.jsonStringField(trimmed, "dir")?) {
+                    Some(dir) => {
+                        match (Report.run(dir.view())) {
+                            Ok(md) => { return Ok(Some(Mcp.jsonToolText(id.view(), md.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `dir`", true)?)); }
                 }
             }
             if (name.view() == "gate") {

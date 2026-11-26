@@ -303,3 +303,36 @@ fn go_record_and_cutover_codegen() -> Result<void, TestFailure> {
     }
     return Ok();
 }
+
+@test
+fn refresh_known_diffs_and_report() -> Result<void, TestFailure> {
+    match (Harness.driverScript()) {
+        Ok(script) => {
+            if (!StrUtil.contains(script.view(), "known_diffs")
+                || !StrUtil.contains(script.view(), "known_path")) {
+                return Err(fail("driver script missing known-diffs support"));
+            }
+        }
+        Err(_) => { return Err(fail("failed to build driver script")); }
+    }
+    let listReq = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}";
+    match (Mcp.handleLine(listReq)) {
+        Ok(Some(resp)) => {
+            if (!StrUtil.contains(resp.view(), "\"refresh\"")
+                || !StrUtil.contains(resp.view(), "\"cutover\"")
+                || !StrUtil.contains(resp.view(), "\"report\"")) {
+                return Err(fail("tools/list missing refresh/cutover/report"));
+            }
+        }
+        _ => { return Err(fail("tools/list failed")); }
+    }
+    match (Report.run("/tmp/ceesafe-anything-nonexistent-dir")) {
+        Ok(md) => {
+            if (!StrUtil.contains(md.view(), "No ported CeeSafe packages found")) {
+                return Err(fail("unexpected empty report output"));
+            }
+        }
+        Err(_) => { return Err(fail("Report.run failed on empty dir")); }
+    }
+    return Ok();
+}
