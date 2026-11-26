@@ -56,20 +56,21 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Nine `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **650/650** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
+Ten `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **718/718** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
 
 Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 43.3 | 7.2 | **6.06x** | match |
-| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 89.7 | 18.4 | **4.87x** | match |
-| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 238.8 | 71.5 | **3.34x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.2 | **2.51x** | match |
-| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.0 | 15.8 | **1.65x** | match |
-| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 81.8 | 57.7 | **1.42x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 57.4 | 56.6 | **1.01x** | match |
-| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 51.8 | 61.2 | **0.84x** | match |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 43.3 | 7.1 | **6.06x** | match |
+| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 133.0 | 24.8 | **5.37x** | match |
+| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 90.5 | 18.5 | **4.89x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 241.2 | 72.0 | **3.35x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 30.4 | **2.57x** | match |
+| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.1 | 15.1 | **1.74x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 81.5 | 60.9 | **1.34x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 56.7 | 57.3 | **0.99x** | match |
+| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 51.0 | 70.7 | **0.72x** | match |
 
 ## Agent Skills
 
