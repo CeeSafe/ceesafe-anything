@@ -56,27 +56,29 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Sixteen `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **928/928** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
+Eighteen `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,018/1,018** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
 
-Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums):
+Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums; aggregate `1603.4 ms` Go -> `633.3 ms` CeeSafe = **2.53x**):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 42.9 | 7.4 | **5.80x** | match |
-| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 132.7 | 25.5 | **5.20x** | match |
-| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 89.8 | 19.5 | **4.60x** | match |
-| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 35.2 | 8.6 | **4.10x** | match |
-| `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 59.5 | 15.1 | **3.94x** | match |
-| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 192.4 | 50.9 | **3.78x** | match |
-| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 236.5 | 74.4 | **3.18x** | match |
-| `gsl` | `server/gsl/gsl.go` | 600k `GenericSublist` wildcard matches | 102.0 | 34.0 | **3.00x** | match |
-| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 54.9 | 19.2 | **2.87x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 32.3 | **2.42x** | match |
-| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.3 | 16.3 | **1.61x** | match |
-| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 80.6 | 60.2 | **1.34x** | match |
-| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 131.9 | 114.4 | **1.15x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 57.6 | 60.2 | **0.96x** | match |
-| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 52.2 | 73.3 | **0.71x** | match |
+| `semver` | `server/util.go` | 200k SemVer 2.0.0 parses + compares | 146.0 | 11.7 | **12.50x** | match |
+| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 140.2 | 24.3 | **5.78x** | match |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 43.6 | 7.8 | **5.61x** | match |
+| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 95.5 | 19.3 | **4.96x** | match |
+| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 35.2 | 8.1 | **4.36x** | match |
+| `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 59.5 | 15.0 | **3.95x** | match |
+| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 196.1 | 50.8 | **3.86x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 242.3 | 72.8 | **3.33x** | match |
+| `msg_trace` | `server/msgtrace.go` | 200k `NATS/1.0` trace header scans | 48.1 | 14.6 | **3.29x** | match |
+| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 54.9 | 17.4 | **3.16x** | match |
+| `gsl` | `server/gsl/gsl.go` | 600k `GenericSublist` wildcard matches | 102.0 | 32.6 | **3.13x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.9 | **2.45x** | match |
+| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.8 | 15.3 | **1.75x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 86.9 | 59.3 | **1.47x** | match |
+| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 136.5 | 114.5 | **1.19x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.9 | 62.5 | **0.94x** | match |
+| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 52.7 | 75.4 | **0.70x** | match |
 
 ## Agent Skills
 
