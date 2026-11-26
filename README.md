@@ -56,25 +56,27 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Fourteen `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **908/908** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
+Sixteen `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **928/928** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
 
 Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 42.9 | 7.0 | **6.10x** | match |
-| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 132.7 | 25.0 | **5.31x** | match |
-| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 89.8 | 18.3 | **4.91x** | match |
-| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 35.2 | 7.6 | **4.63x** | match |
-| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 192.4 | 49.5 | **3.88x** | match |
-| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 54.9 | 16.9 | **3.26x** | match |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 42.9 | 7.4 | **5.80x** | match |
+| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 132.7 | 25.5 | **5.20x** | match |
+| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 89.8 | 19.5 | **4.60x** | match |
+| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 35.2 | 8.6 | **4.10x** | match |
+| `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 59.5 | 15.1 | **3.94x** | match |
+| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 192.4 | 50.9 | **3.78x** | match |
 | `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 236.5 | 74.4 | **3.18x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.4 | **2.49x** | match |
-| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.3 | 15.5 | **1.70x** | match |
-| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 80.6 | 57.3 | **1.41x** | match |
-| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 131.9 | 110.9 | **1.19x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 57.6 | 56.7 | **1.02x** | match |
-| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 52.2 | 70.8 | **0.74x** | match |
+| `gsl` | `server/gsl/gsl.go` | 600k `GenericSublist` wildcard matches | 102.0 | 34.0 | **3.00x** | match |
+| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 54.9 | 19.2 | **2.87x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 32.3 | **2.42x** | match |
+| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.3 | 16.3 | **1.61x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 80.6 | 60.2 | **1.34x** | match |
+| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 131.9 | 114.4 | **1.15x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 57.6 | 60.2 | **0.96x** | match |
+| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 52.2 | 73.3 | **0.71x** | match |
 
 ## Agent Skills
 
