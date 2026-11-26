@@ -136,6 +136,10 @@ public struct Mcp {
             )?;
             StrUtil.append(
                 mut out,
+                "{\"name\":\"cutover\",\"description\":\"Generate swap-in shim routing callers to the CeeSafe library\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"},\"apply\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
                 "{\"name\":\"gate\",\"description\":\"Run ceesafec fmt, check --deny-warnings, test, unsafe, stub, and build gates\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
             )?;
             StrUtil.append(
@@ -243,6 +247,22 @@ public struct Mcp {
                 match (StrUtil.jsonStringField(trimmed, "pkg")?) {
                     Some(pkg) => {
                         match (Shadow.run(pkg.view())) {
+                            Ok(msg) => { return Ok(Some(Mcp.jsonToolText(id.view(), msg.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "cutover") {
+                let applyOpt = StrUtil.jsonStringField(trimmed, "apply")?;
+                let apply = match (applyOpt) {
+                    Some(v) => v.view() == "true",
+                    null => false,
+                };
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Cutover.run(pkg.view(), apply)) {
                             Ok(msg) => { return Ok(Some(Mcp.jsonToolText(id.view(), msg.view(), false)?)); }
                             Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
                         }

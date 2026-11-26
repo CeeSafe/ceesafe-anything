@@ -299,6 +299,95 @@ public struct Harness {
         return Ok(s);
     }
 
+    public fn goRecordScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import json, os, re, subprocess, sys\n\n")?;
+        StrUtil.append(
+            mut s,
+            "SAMPLES = {'bytes': ['', 'hello', 'caf\\u00e9'], 'cstr': ['', 'hello'], 'i32': [0, 1, -1, 42], 'i64': [0, 1, -1, 42], 'u32': [0, 1, 42], 'u64': [0, 1, 42], 'usize': [0, 1, 16], 'f64': [0.0, 1.5, -3.25], 'bool': [False, True]}\n\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "unit_path, manifest_path, cases_path, work_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]\n",
+        )?;
+        StrUtil.append(mut s, "inputs_path = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else ''\n")?;
+        StrUtil.append(mut s, "manifest = json.load(open(manifest_path, encoding='utf-8'))\n")?;
+        StrUtil.append(mut s, "exports = manifest.get('exports', [])\n")?;
+        StrUtil.append(mut s, "by_name = {e['name']: e for e in exports}\n")?;
+        StrUtil.append(mut s, "if inputs_path:\n")?;
+        StrUtil.append(
+            mut s,
+            "    cases = [json.loads(l) for l in open(inputs_path, encoding='utf-8') if l.strip()]\n",
+        )?;
+        StrUtil.append(mut s, "else:\n")?;
+        StrUtil.append(mut s, "    cases = []\n")?;
+        StrUtil.append(mut s, "    for exp in exports:\n")?;
+        StrUtil.append(mut s, "        pools = [SAMPLES.get(p['kind'], [0, 1]) for p in exp.get('params', [])]\n")?;
+        StrUtil.append(mut s, "        n = max((len(p) for p in pools), default=1)\n")?;
+        StrUtil.append(mut s, "        for i in range(n):\n")?;
+        StrUtil.append(
+            mut s,
+            "            cases.append({'fn': exp['name'], 'args': [pool[i % len(pool)] for pool in pools]})\n",
+        )?;
+        StrUtil.append(mut s, "go_dir = os.path.join(work_dir, 'go_rec')\n")?;
+        StrUtil.append(mut s, "pkg_dir = os.path.join(go_dir, 'unitpkg')\n")?;
+        StrUtil.append(mut s, "os.makedirs(pkg_dir, exist_ok=True)\n")?;
+        StrUtil.append(
+            mut s,
+            "open(os.path.join(go_dir, 'go.mod'), 'w', encoding='utf-8').write('module ceesafe_rec\\n\\ngo 1.21\\n')\n",
+        )?;
+        StrUtil.append(mut s, "src = open(unit_path, encoding='utf-8').read()\n")?;
+        StrUtil.append(mut s, "src = re.sub(r'(?m)^package\\s+\\w+', 'package unitpkg', src, count=1)\n")?;
+        StrUtil.append(mut s, "open(os.path.join(pkg_dir, 'unit.go'), 'w', encoding='utf-8').write(src)\n")?;
+        StrUtil.append(mut s, "def go_lit(kind, val):\n")?;
+        StrUtil.append(mut s, "    if kind == 'bytes': return f'[]byte({json.dumps(str(val))})'\n")?;
+        StrUtil.append(mut s, "    if kind == 'cstr': return json.dumps(str(val))\n")?;
+        StrUtil.append(mut s, "    if kind == 'f64': return f'float64({float(val)})'\n")?;
+        StrUtil.append(mut s, "    if kind == 'bool': return 'true' if val else 'false'\n")?;
+        StrUtil.append(
+            mut s,
+            "    tmap = {'i32': 'int32', 'i64': 'int64', 'u32': 'uint32', 'u64': 'uint64', 'usize': 'uint'}\n",
+        )?;
+        StrUtil.append(mut s, "    return f'{tmap.get(kind, \"int32\")}({int(val)})'\n")?;
+        StrUtil.append(
+            mut s,
+            "lines = ['package main', 'import (', '\"encoding/json\"', '\"fmt\"', '\"os\"', '\"ceesafe_rec/unitpkg\"', ')', 'func main() {', f'out, err := os.Create({json.dumps(cases_path)})', 'if err != nil { panic(err) }', 'defer out.Close()']\n",
+        )?;
+        StrUtil.append(mut s, "for c in cases:\n")?;
+        StrUtil.append(mut s, "    exp = by_name[c['fn']]\n")?;
+        StrUtil.append(
+            mut s,
+            "    call_args = ', '.join(go_lit(p['kind'], v) for p, v in zip(exp.get('params', []), c['args']))\n",
+        )?;
+        StrUtil.append(mut s, "    meta = json.dumps({'fn': c['fn'], 'symbol': exp['symbol'], 'args': c['args']})\n")?;
+        StrUtil.append(mut s, "    lines.append('func() {')\n")?;
+        StrUtil.append(
+            mut s,
+            "    lines.append(f'    rec := map[string]any{{\"fn\": {json.dumps(c[\"fn\"])}, \"symbol\": {json.dumps(exp[\"symbol\"])}}}')\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "    lines.append(f'    var meta map[string]any; _ = json.Unmarshal([]byte({json.dumps(meta)}), &meta); rec[\"args\"] = meta[\"args\"]')\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "    lines.append('    defer func() { if r := recover(); r != nil { rec[\"error\"] = fmt.Sprint(r); b, _ := json.Marshal(rec); fmt.Fprintln(out, string(b)) } }()')\n",
+        )?;
+        StrUtil.append(mut s, "    if exp.get('return', 'i32') == 'void':\n")?;
+        StrUtil.append(mut s, "        lines.append(f'    unitpkg.{c[\"fn\"]}({call_args}); rec[\"ok\"] = nil')\n")?;
+        StrUtil.append(mut s, "    else:\n")?;
+        StrUtil.append(mut s, "        lines.append(f'    rec[\"ok\"] = unitpkg.{c[\"fn\"]}({call_args})')\n")?;
+        StrUtil.append(mut s, "    lines.append('    b, _ := json.Marshal(rec); fmt.Fprintln(out, string(b))')\n")?;
+        StrUtil.append(mut s, "    lines.append('}()')\n")?;
+        StrUtil.append(mut s, "lines.append('}')\n")?;
+        StrUtil.append(
+            mut s,
+            "open(os.path.join(go_dir, 'main.go'), 'w', encoding='utf-8').write('\\n'.join(lines) + '\\n')\n",
+        )?;
+        StrUtil.append(mut s, "subprocess.run(['go', 'run', '.'], cwd=go_dir, check=True)\n")?;
+        return Ok(s);
+    }
+
     fn writeDriver(pkgDir: StringView) -> Result<String, AppError> {
         let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
         FsUtil.ensureDir(workDir.view())?;
@@ -439,6 +528,32 @@ public struct Harness {
                 null => {}
             }
             let ran = match (Process.capture("node", args, null)) {
+                Ok(out) => out,
+                Err(e) => { return Err(AppErrors.fromIo(e)); },
+            };
+            if (ran.status != 0) {
+                return Err(AppError.CommandFailed);
+            }
+            return Ok(casesPath);
+        }
+
+        if (lang == "go") {
+            let goScriptPath = StrUtil.joinPath(workDir.view(), "record_go.py")?;
+            let script = Harness.goRecordScript()?;
+            FsUtil.writeText(goScriptPath.view(), script.view())?;
+            var args = Vector<StringView>.create();
+            match (args.push(goScriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(workDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (inputsOpt) {
+                Some(inp) => {
+                    match (args.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+                }
+                null => {}
+            }
+            let ran = match (Process.capture("python3", args, null)) {
                 Ok(out) => out,
                 Err(e) => { return Err(AppErrors.fromIo(e)); },
             };

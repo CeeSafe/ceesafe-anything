@@ -18,6 +18,9 @@ fn printUsage() {
         "  ceesafe-anything shadow <pkg>                 Generate C shadow wrapper comparing both side by side",
     );
     Console.writeLine(
+        "  ceesafe-anything cutover <pkg> [--apply]      Generate swap-in shim (or apply in place with --apply)",
+    );
+    Console.writeLine(
         "  ceesafe-anything gate <pkg>                   Run fmt, check, test, stub, unsafe, build, and diff gates",
     );
     Console.writeLine("  ceesafe-anything lookup <lang> <dep>          Look up the CeeSafe library equivalent");
@@ -160,6 +163,20 @@ fn main() -> i32 {
             null => ".",
         };
         match (Shadow.run(pkg)) {
+            Ok(msg) => { Console.write(msg.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "cutover") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        let apply = match (argAt(3)) {
+            Some(f) => f == "--apply",
+            null => false,
+        };
+        match (Cutover.run(pkg, apply)) {
             Ok(msg) => { Console.write(msg.view()); return 0; }
             Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
         }

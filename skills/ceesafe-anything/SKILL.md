@@ -1,6 +1,6 @@
 ---
 name: ceesafe-anything
-description: Port TypeScript/JavaScript, Python, C, Go, Ruby, Java, Kotlin, PHP, C# and PowerShell to CeeSafe with the ceesafe-anything CLI or MCP tools, from one hot function up to a whole app rewritten as a pure CeeSafe app - profile, plan, bridge one unit at a time, record the original's behavior, port, diff, bench, shadow and gate. Use when asked to rewrite, port or migrate code or an app to CeeSafe, to plan such a migration, or to make slow code faster with CeeSafe.
+description: Port TypeScript/JavaScript, Python, C, and Go to CeeSafe with the ceesafe-anything CLI or MCP tools, from one hot function up to a whole app rewritten as a pure CeeSafe app - analyze, bridge one unit at a time, record the original's behavior, port, diff, bench, shadow, gate, and cutover. Use when asked to rewrite, port or migrate code or an app to CeeSafe, to plan such a migration, or to make slow code faster with CeeSafe.
 ---
 
 # Migration to CeeSafe with ceesafe-anything
@@ -11,37 +11,38 @@ the goal is the whole app, and call a port done only when `gate` passes.
 **Whole app to a pure CeeSafe app** (the user wants the app rewritten in CeeSafe, with the original
 kept only as reference): read [whole-app.md](whole-app.md) first and follow it.
 
-Tools: the `ceesafe-anything` CLI, or the same steps as MCP tools (`ceesafe-anything mcp`): `go`,
-`profile`, `analyze`, `bridge`, `refresh`, `record`, `build`, `diff`, `bench`, `shadow`, `gate`,
-`enable`, `disable`, `report`, `rules`, and for a whole app `app_record`, `app_replay`,
-`app_front_door`, `app_wire`, `app_lift`, `app_drift`. Pair with `ceesafec mcp` (`ceesafe_check`,
-`ceesafe_api`, `ceesafe_test`, `ceesafe_doc`) while writing `.cee` code. Run `ceesafe-anything doctor`
-if `ceesafec`, `cc`, or a source runtime is missing.
+Tools: the `ceesafe-anything` CLI, or the same steps as MCP tools (`ceesafe-anything mcp`):
+`analyze`, `bridge`, `record`, `build`, `diff`, `bench`, `shadow`, `cutover`, `gate`, and
+`lookup_library`. Pair with `ceesafec mcp` (`ceesafe_check`, `ceesafe_api`, `ceesafe_test`,
+`ceesafe_doc`) while writing `.cee` code. Run `ceesafe-anything doctor` if `ceesafec`, `cc`, or a
+source runtime (`python3`, `node`, `go`) is missing.
 
-## 0. Profile & 1. Plan
+## 1. Analyze & Plan
 
 ```sh
-ceesafe-anything profile <repo> -- node bench.mjs
-ceesafe-anything analyze <repo> -o plan.md
+ceesafe-anything analyze <repo>
 ceesafe-anything analyze <repo> --json
+ceesafe-anything lookup <lang> <dep>
 ```
 
-- Present `start_here` units and the wave order.
-- Call out `keep` units, `blocked` units, and dependencies mapped as `none` or `unknown` in CeeSafe
-  (`lib/std`, `CeeSafeLibs`, `CeeSafe.Web`, `CeeSafe-index`). Never hand-roll a missing library silently.
+- Review discovered units, LOC, extracted function counts, and risk counts.
+- Look up dependencies in CeeSafe (`lib/std`, `CeeSafeLibs`, `CeeSafe.Web`, `CeeSafe-index`).
+  Never hand-roll a missing library silently.
 - **Wait for the user's approval of the plan and of the first unit.**
 
-## 2. Port one unit
+## 2. Bridge & Record One Unit
 
 ```sh
-ceesafe-anything bridge <repo> <unit-id>       # CeeSafe package in <repo>/ceesafe/<name>; never overwrites
-ceesafe-anything record <pkg>                  # record original behavior -> cases.jsonl
+ceesafe-anything bridge <repo> <unit> [out]    # scaffolds CeeSafe package; extracts C/Py/TS/Go signatures
+ceesafe-anything record <pkg> [inputs.jsonl]   # records original behavior -> cases.jsonl
 ```
 
-Write the port in `src/port.cee`; `src/bridge.cee`, `include/<lib>.h`, and language wrappers are
-generated. After changing a signature in `port.cee`, run `ceesafe-anything refresh <pkg>`.
-
-Before writing code, run `ceesafe-anything rules <repo>` and follow every rule it lists.
+Write the port in `src/port.cee`; `src/bridge.cee`, `include/<lib>.h`, and `ceesafe-anything.json`
+are generated automatically. Supported C-ABI / FFI parameter kinds:
+- Scalars (`i32`, `u32`, `i64`, `u64`, `usize`, `f64`, `bool`, `void`)
+- Read-only byte slices (`const uint8_t *ptr, size_t len` -> `Slice<u8>`)
+- NUL-terminated C strings (`const char *s` -> `Slice<u8>` via `extern "C" fn strlen`)
+- Mutable output buffers (`uint8_t *out, size_t len` -> `SliceMut<u8>` via `SliceMut.fromRaw`)
 
 ### CeeSafe Porting Rules
 
@@ -60,31 +61,32 @@ Before writing code, run `ceesafe-anything rules <repo>` and follow every rule i
 - **Cyclic graphs & shared state**: There is no `Rc<T>` or `Weak<T>`. Use `SlotMap<T>` + `Handle<T>`
   for graphs/trees, or `Arc<Mutex<T>>` when shared across threads.
 - **No `unsafe` in `src/port.cee`**: Keep all raw pointer conversions isolated in generated `src/bridge.cee`.
-  Any unavoidable `unsafe` must have a `// SAFETY:` comment right above it.
+  Any unavoidable `unsafe` must have a `// SAFETY:` comment right above it and a `/// Safety:` doc
+  comment on the enclosing function.
 - **Unit tests**: Add `@test` functions in `src/port.cee` and verify with `ceesafec test --sweep alloc`.
 
-## 3. Prove it
+## 3. Prove It
 
 ```sh
-ceesafe-anything build <pkg>
-ceesafe-anything diff <pkg>                    # must be N/N
-ceesafe-anything bench <pkg>                   # original vs CeeSafe, bridge included
+ceesafe-anything build <pkg>                   # emits C and links out/lib<pkg>.dylib
+ceesafe-anything diff <pkg>                    # must match N/N recorded cases
+ceesafe-anything bench <pkg>                   # original vs CeeSafe timing table
 ```
 
-A mismatch is a behavior difference: fix the port, never edit `cases.jsonl`. For approved
-intentional differences, add entries to `<pkg>/known-diffs.jsonl`.
+A mismatch is a behavior difference: fix the port, never edit `cases.jsonl`.
 
-## 4. Ship safely & 5. Gate
+## 4. Shadow, Gate & Cutover
 
 ```sh
-ceesafe-anything shadow <pkg>                  # run original and CeeSafe side by side
-ceesafe-anything gate <pkg>                    # fmt, check --deny-warnings, test, unsafe, ported, diff
+ceesafe-anything shadow <pkg>                  # generates shadow/<pkg>_shadow.c + shadow/flags.txt
+ceesafe-anything gate <pkg>                    # fmt, check --deny-warnings, test, stubs, unsafe, build, diff
+ceesafe-anything cutover <pkg> [--apply]       # generates cutover shim + link flags (or swaps in with --apply)
 ```
 
 `gate` verifies:
 - `ceesafec fmt --check`
 - `ceesafec check --deny-warnings`
-- `ceesafec test` (and leak checking)
-- No unexplained `unsafe` blocks
+- `ceesafec test`
 - No `panic("unimplemented: ...")` stubs left in `src/port.cee`
-- Built shared library exports every symbol and matches 100% of recorded cases
+- Every `unsafe` block has a `// SAFETY:` comment
+- Built shared library links cleanly and matches 100% of recorded cases
