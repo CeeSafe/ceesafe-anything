@@ -148,6 +148,18 @@ public struct Mcp {
             )?;
             StrUtil.append(
                 mut out,
+                "{\"name\":\"rules\",\"description\":\"Print CeeSafe porting rules tailored to a repository\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"root\":{\"type\":\"string\"}},\"required\":[\"root\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"profile\",\"description\":\"Rank candidate units in a repository for CeeSafe porting\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"root\":{\"type\":\"string\"}},\"required\":[\"root\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"lift\",\"description\":\"Assemble ported unit packages into a standalone pure CeeSafe executable app\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"},\"out\":{\"type\":\"string\"}},\"required\":[\"dir\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
                 "{\"name\":\"gate\",\"description\":\"Run ceesafec fmt, check --deny-warnings, test, unsafe, stub, and build gates\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
             )?;
             StrUtil.append(
@@ -294,6 +306,45 @@ public struct Mcp {
                     Some(dir) => {
                         match (Report.run(dir.view())) {
                             Ok(md) => { return Ok(Some(Mcp.jsonToolText(id.view(), md.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `dir`", true)?)); }
+                }
+            }
+            if (name.view() == "rules") {
+                match (StrUtil.jsonStringField(trimmed, "root")?) {
+                    Some(root) => {
+                        match (Rules.run(root.view())) {
+                            Ok(md) => { return Ok(Some(Mcp.jsonToolText(id.view(), md.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `root`", true)?)); }
+                }
+            }
+            if (name.view() == "profile") {
+                match (StrUtil.jsonStringField(trimmed, "root")?) {
+                    Some(root) => {
+                        let empty = Vector<StringView>.create();
+                        match (Profile.run(root.view(), empty)) {
+                            Ok(md) => { return Ok(Some(Mcp.jsonToolText(id.view(), md.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `root`", true)?)); }
+                }
+            }
+            if (name.view() == "lift") {
+                let outOpt = StrUtil.jsonStringField(trimmed, "out")?;
+                match (StrUtil.jsonStringField(trimmed, "dir")?) {
+                    Some(dir) => {
+                        let outView: StringView? = match (borrow outOpt) {
+                            Some(o) => Some(o.view()),
+                            null => null,
+                        };
+                        match (Lift.run(dir.view(), outView)) {
+                            Ok(msg) => { return Ok(Some(Mcp.jsonToolText(id.view(), msg.view(), false)?)); }
                             Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
                         }
                     }

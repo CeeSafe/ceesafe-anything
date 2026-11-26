@@ -1,0 +1,135 @@
+// `rules`: print CeeSafe porting rules tailored to the languages detected in a repository,
+// plus any project-specific rules from `<repo>/ceesafe/RULES.md`.
+
+public struct Rules {
+    fn detectLangs(
+        dir: StringView,
+        hasC: borrow mut bool,
+        hasPy: borrow mut bool,
+        hasTs: borrow mut bool,
+        hasGo: borrow mut bool,
+        depth: usize,
+    ) -> Result<void, AppError> {
+        if (depth > 4) {
+            return Ok();
+        }
+        let entries = match (Directory.list(dir)) {
+            Ok(list) => list,
+            Err(_) => { return Ok(); },
+        };
+        for (i in 0..entries.length) {
+            let name = entries[i].view();
+            if (name == ".git" || name == "node_modules" || name == "target" || name == "out" ||
+                name == ".ceesafe-anything" || name == "ceesafe") {
+                continue;
+            }
+            let full = StrUtil.joinPath(dir, name)?;
+            if (StrUtil.endsWith(name, ".c") || StrUtil.endsWith(name, ".h")) {
+                hasC = true;
+            } else if (StrUtil.endsWith(name, ".py")) {
+                hasPy = true;
+            } else if (StrUtil.endsWith(name, ".ts") || StrUtil.endsWith(name, ".tsx") ||
+                StrUtil.endsWith(name, ".js") || StrUtil.endsWith(name, ".mjs")) {
+                hasTs = true;
+            } else if (StrUtil.endsWith(name, ".go")) {
+                hasGo = true;
+            } else if (!StrUtil.contains(name, ".")) {
+                Rules.detectLangs(full.view(), mut hasC, mut hasPy, mut hasTs, mut hasGo, depth + 1)?;
+            }
+        }
+        return Ok();
+    }
+
+    public fn run(root: StringView) -> Result<String, AppError> {
+        var hasC = false;
+        var hasPy = false;
+        var hasTs = false;
+        var hasGo = false;
+        Rules.detectLangs(root, mut hasC, mut hasPy, mut hasTs, mut hasGo, 0)?;
+
+        var out = String.create();
+        StrUtil.append(mut out, "# CeeSafe Porting Rules for `")?;
+        StrUtil.append(mut out, root)?;
+        StrUtil.append(mut out, "`\n\n## Core CeeSafe Rules\n")?;
+        StrUtil.append(
+            mut out,
+            "- No panics across FFI boundaries: return `Result<T, E>`, check bounds, and use `checkedAdd`/`checkedSub`/`checkedMul`.\n",
+        )?;
+        StrUtil.append(
+            mut out,
+            "- Handle `AllocError` explicitly on `push`, `append`, `String.from`, and `Box.create` with `?`.\n",
+        )?;
+        StrUtil.append(
+            mut out,
+            "- Keep `unsafe` strictly inside generated `src/bridge.cee` with `/// Safety:` and `// SAFETY:` comments.\n",
+        )?;
+        StrUtil.append(
+            mut out,
+            "- Use `truncate<T>(...)` for narrowing or sign-changing integer conversions (never `as`).\n",
+        )?;
+        StrUtil.append(
+            mut out,
+            "- No macros, tuples, type aliases, or string interpolation; use named structs and `String` builders.\n",
+        )?;
+
+        if (hasC) {
+            StrUtil.append(mut out, "\n## C Source Rules\n")?;
+            StrUtil.append(
+                mut out,
+                "- Convert `(const uint8_t *ptr, size_t len)` to `Slice<u8>` and `(uint8_t *out, size_t len)` to `SliceMut<u8>`.\n",
+            )?;
+            StrUtil.append(
+                mut out,
+                "- Guard NULL pointers in `bridge.cee` before calling `Slice.fromRaw` or `strlen`.\n",
+            )?;
+            StrUtil.append(
+                mut out,
+                "- Map C system libraries (`<zlib.h>`, `<sqlite3.h>`, `<openssl/ssl.h>`) with `ceesafe-anything lookup c <dep>`.\n",
+            )?;
+        }
+        if (hasPy) {
+            StrUtil.append(mut out, "\n## Python Source Rules\n")?;
+            StrUtil.append(
+                mut out,
+                "- Replace dynamic dictionaries and exceptions with typed `struct`s and `Result<T, E>`.\n",
+            )?;
+            StrUtil.append(
+                mut out,
+                "- Map standard/third-party modules (`json`, `re`, `sqlite3`, `requests`) with `ceesafe-anything lookup python <dep>`.\n",
+            )?;
+        }
+        if (hasTs) {
+            StrUtil.append(mut out, "\n## TypeScript / JavaScript Source Rules\n")?;
+            StrUtil.append(
+                mut out,
+                "- Replace `number` with `f64` or exact integer types (`i32`/`i64`/`usize`) as appropriate.\n",
+            )?;
+            StrUtil.append(
+                mut out,
+                "- Map web frameworks (`express`, `fastify`, `zod`) to `CeeSafe.Web` packages via `ceesafe-anything lookup ts <dep>`.\n",
+            )?;
+        }
+        if (hasGo) {
+            StrUtil.append(mut out, "\n## Go Source Rules\n")?;
+            StrUtil.append(
+                mut out,
+                "- Replace `error` return pairs with `Result<T, E>` and `[]byte` slices with `Slice<u8>`/`Vector<u8>`.\n",
+            )?;
+            StrUtil.append(mut out, "- Map `net/http` and `encoding/json` with `ceesafe-anything lookup go <dep>`.\n")?;
+        }
+
+        let ceesafeDir = StrUtil.joinPath(root, "ceesafe")?;
+        let customPath = StrUtil.joinPath(ceesafeDir.view(), "RULES.md")?;
+        match (FsUtil.readText(customPath.view())) {
+            Ok(custom) => {
+                StrUtil.append(mut out, "\n## Project Rules (`ceesafe/RULES.md`)\n")?;
+                StrUtil.append(mut out, custom.view())?;
+                if (!StrUtil.endsWith(custom.view(), "\n")) {
+                    StrUtil.append(mut out, "\n")?;
+                }
+            }
+            Err(_) => {}
+        }
+        return Ok(out);
+    }
+}

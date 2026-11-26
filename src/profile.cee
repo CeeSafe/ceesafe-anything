@@ -1,0 +1,73 @@
+// `profile`: measure workload wall-clock time & peak RSS, and combine with static unit analysis
+// to highlight the best porting targets first.
+
+public struct Profile {
+    public fn runnerScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import json, resource, subprocess, sys, time\n\n")?;
+        StrUtil.append(mut s, "out_json, out_txt, cwd = sys.argv[1], sys.argv[2], sys.argv[3]\n")?;
+        StrUtil.append(mut s, "cmd = sys.argv[4:]\n")?;
+        StrUtil.append(mut s, "t0 = time.perf_counter_ns()\n")?;
+        StrUtil.append(mut s, "proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)\n")?;
+        StrUtil.append(mut s, "dt_ms = (time.perf_counter_ns() - t0) / 1_000_000.0\n")?;
+        StrUtil.append(mut s, "rss_kb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n")?;
+        StrUtil.append(
+            mut s,
+            "res = {'cmd': cmd, 'status': proc.returncode, 'elapsed_ms': round(dt_ms, 2), 'max_rss': rss_kb}\n",
+        )?;
+        StrUtil.append(mut s, "json.dump(res, open(out_json, 'w', encoding='utf-8'), indent=2)\n")?;
+        StrUtil.append(
+            mut s,
+            "open(out_txt, 'w', encoding='utf-8').write(f'status={proc.returncode} elapsed_ms={dt_ms:.2f} max_rss={rss_kb}\\n')\n",
+        )?;
+        return Ok(s);
+    }
+
+    public fn run(root: StringView, cmdArgs: borrow Vector<StringView>) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, "# Profile Report for `")?;
+        StrUtil.append(mut out, root)?;
+        StrUtil.append(mut out, "`\n\n")?;
+
+        if (cmdArgs.length > 0) {
+            let workDir = StrUtil.joinPath(root, ".ceesafe-anything")?;
+            FsUtil.ensureDir(workDir.view())?;
+            let scriptPath = StrUtil.joinPath(workDir.view(), "profile_run.py")?;
+            let script = Profile.runnerScript()?;
+            FsUtil.writeText(scriptPath.view(), script.view())?;
+            let jsonPath = StrUtil.joinPath(workDir.view(), "profile.json")?;
+            let txtPath = StrUtil.joinPath(workDir.view(), "profile.txt")?;
+
+            var pyArgs = Vector<StringView>.create();
+            match (pyArgs.push(scriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (pyArgs.push(jsonPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (pyArgs.push(txtPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (pyArgs.push(root)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            for (i in 0..cmdArgs.length) {
+                match (pyArgs.push(cmdArgs[i])) {
+                    Ok() => {}
+                    Err(_) => { return Err(AppError.OutOfMemory); }
+                }
+            }
+            let ran = match (Process.capture("python3", pyArgs, null)) {
+                Ok(r) => r,
+                Err(e) => { return Err(AppErrors.fromIo(e)); },
+            };
+            if (ran.status != 0) {
+                return Err(AppError.CommandFailed);
+            }
+            let metrics = FsUtil.readText(txtPath.view())?;
+            StrUtil.append(mut out, "## Workload Timing\n")?;
+            StrUtil.append(mut out, "- Metrics: `")?;
+            StrUtil.append(mut out, StrUtil.trim(metrics.view()))?;
+            StrUtil.append(mut out, "`\n- Saved: `")?;
+            StrUtil.append(mut out, jsonPath.view())?;
+            StrUtil.append(mut out, "`\n\n")?;
+        }
+
+        StrUtil.append(mut out, "## Candidate Units\n")?;
+        let analysis = Analyze.run(root, false)?;
+        StrUtil.append(mut out, analysis.view())?;
+        return Ok(out);
+    }
+}

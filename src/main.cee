@@ -27,6 +27,15 @@ fn printUsage() {
     Console.writeLine(
         "  ceesafe-anything report [dir]                 Print a Markdown migration report across ported packages",
     );
+    Console.writeLine(
+        "  ceesafe-anything rules [root]                 Print CeeSafe porting rules for a repository",
+    );
+    Console.writeLine(
+        "  ceesafe-anything profile <root> [-- cmd...]   Time workload and rank candidate units to port",
+    );
+    Console.writeLine(
+        "  ceesafe-anything lift <dir> [out]             Assemble ported units into a standalone CeeSafe app",
+    );
     Console.writeLine("  ceesafe-anything lookup <lang> <dep>          Look up the CeeSafe library equivalent");
     Console.writeLine("  ceesafe-anything mcp                          Start the stdio MCP server");
 }
@@ -212,6 +221,55 @@ fn main() -> i32 {
         };
         match (Report.run(target)) {
             Ok(md) => { Console.write(md.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "rules") {
+        let root = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Rules.run(root)) {
+            Ok(md) => { Console.write(md.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "profile") {
+        let root = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        var cmdArgs = Vector<StringView>.create();
+        var startIdx: usize = 3;
+        match (argAt(3)) {
+            Some(sep) => {
+                if (sep == "--") {
+                    startIdx = 4;
+                }
+            }
+            null => {}
+        }
+        for (i in startIdx..argc) {
+            match (argAt(i)) {
+                Some(a) => {
+                    match (cmdArgs.push(a)) { Ok() => {} Err(_) => {} }
+                }
+                null => {}
+            }
+        }
+        match (Profile.run(root, cmdArgs)) {
+            Ok(md) => { Console.write(md.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "lift") {
+        let srcDir = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        let outOpt = argAt(3);
+        match (Lift.run(srcDir, outOpt)) {
+            Ok(msg) => { Console.write(msg.view()); return 0; }
             Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
         }
     }

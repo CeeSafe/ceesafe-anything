@@ -336,3 +336,40 @@ fn refresh_known_diffs_and_report() -> Result<void, TestFailure> {
     }
     return Ok();
 }
+
+@test
+fn rules_profile_and_lift_codegen() -> Result<void, TestFailure> {
+    match (Rules.run("examples/c_text")) {
+        Ok(md) => {
+            if (!StrUtil.contains(md.view(), "Core CeeSafe Rules")
+                || !StrUtil.contains(md.view(), "C Source Rules")) {
+                return Err(fail("Rules.run missing expected C rules"));
+            }
+        }
+        Err(_) => { return Err(fail("Rules.run failed")); }
+    }
+    match (Profile.runnerScript()) {
+        Ok(script) => {
+            if (!StrUtil.contains(script.view(), "ru_maxrss")
+                || !StrUtil.contains(script.view(), "perf_counter_ns")) {
+                return Err(fail("Profile.runnerScript missing timing/RSS"));
+            }
+        }
+        Err(_) => { return Err(fail("Profile.runnerScript failed")); }
+    }
+    var pkgs = Vector<String>.create();
+    match (StrUtil.cloneView("math_ops")) {
+        Ok(v) => { match (pkgs.push(v)) { Ok() => {} Err(_) => {} } }
+        Err(_) => { return Err(fail("oom")); }
+    }
+    match (Lift.buildAppMain("my_app", pkgs)) {
+        Ok(mainSrc) => {
+            if (!StrUtil.contains(mainSrc.view(), "math_ops_port")
+                || !StrUtil.contains(mainSrc.view(), "fn main() -> i32")) {
+                return Err(fail("Lift.buildAppMain missing lifted unit"));
+            }
+        }
+        Err(_) => { return Err(fail("Lift.buildAppMain failed")); }
+    }
+    return Ok();
+}

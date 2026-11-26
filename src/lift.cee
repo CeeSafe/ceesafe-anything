@@ -1,0 +1,158 @@
+// `lift`: assemble all ported CeeSafe unit packages under a repository (or package directory)
+// into a standalone pure CeeSafe executable app (`ceesafe.toml`, `src/<pkg>_port.cee`, `src/main.cee`,
+// `LIFT_REPORT.md`) with zero FFI shims and zero fallback to the original runtime.
+
+public struct Lift {
+    fn collectPackages(dir: StringView, out: borrow mut Vector<String>) -> Result<void, AppError> {
+        let directManifest = StrUtil.joinPath(dir, "ceesafe-anything.json")?;
+        if (FsUtil.fileExists(directManifest.view())) {
+            match (out.push(StrUtil.cloneView(dir)?)) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+            return Ok();
+        }
+        let entries = match (Directory.list(dir)) {
+            Ok(list) => list,
+            Err(_) => { return Ok(); },
+        };
+        for (i in 0..entries.length) {
+            let child = StrUtil.joinPath(dir, entries[i].view())?;
+            let manifest = StrUtil.joinPath(child.view(), "ceesafe-anything.json")?;
+            if (FsUtil.fileExists(manifest.view())) {
+                match (out.push(child)) {
+                    Ok() => {}
+                    Err(_) => { return Err(AppError.OutOfMemory); }
+                }
+            }
+        }
+        return Ok();
+    }
+
+    public fn buildAppToml(appName: StringView) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, "[package]\nname = \"")?;
+        StrUtil.append(mut out, appName)?;
+        StrUtil.append(mut out, "\"\nversion = \"0.1.0\"\nkind = \"executable\"\n\n[dependencies]\n")?;
+        return Ok(out);
+    }
+
+    public fn buildAppMain(appName: StringView, pkgNames: borrow Vector<String>) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, "// Standalone pure CeeSafe app lifted by ceesafe-anything.\n")?;
+        StrUtil.append(
+            mut out,
+            "// All ported unit structs (`<pkg>_port`) are compiled directly into this binary.\n\n",
+        )?;
+        StrUtil.append(mut out, "fn main() -> i32 {\n")?;
+        StrUtil.append(mut out, "    Console.writeLine(\"")?;
+        StrUtil.append(mut out, appName)?;
+        StrUtil.append(mut out, " (pure CeeSafe lifted app)\");\n")?;
+        StrUtil.append(mut out, "    Console.writeLine(\"Lifted units:\");\n")?;
+        for (i in 0..pkgNames.length) {
+            StrUtil.append(mut out, "    Console.writeLine(\"  - ")?;
+            StrUtil.append(mut out, pkgNames[i].view())?;
+            StrUtil.append(mut out, "_port\");\n")?;
+        }
+        StrUtil.append(mut out, "    return 0;\n}\n")?;
+        return Ok(out);
+    }
+
+    public fn run(sourceDir: StringView, outOpt: StringView?) -> Result<String, AppError> {
+        var pkgDirs = Vector<String>.create();
+        Lift.collectPackages(sourceDir, mut pkgDirs)?;
+        let ceesafeSub = StrUtil.joinPath(sourceDir, "ceesafe")?;
+        if (pkgDirs.length == 0 && FsUtil.fileExists(ceesafeSub.view())) {
+            Lift.collectPackages(ceesafeSub.view(), mut pkgDirs)?;
+        }
+        if (pkgDirs.length == 0) {
+            return Err(AppError.NotFound);
+        }
+
+        let appDir = match (outOpt) {
+            Some(p) => StrUtil.cloneView(p)?,
+            null => {
+                FsUtil.ensureDir(ceesafeSub.view())?;
+                StrUtil.joinPath(ceesafeSub.view(), "app")?
+            }
+        };
+        let tomlPath = StrUtil.joinPath(appDir.view(), "ceesafe.toml")?;
+        if (FsUtil.fileExists(tomlPath.view())) {
+            return Err(AppError.AlreadyExists);
+        }
+
+        let rawName = StrUtil.basename(sourceDir);
+        var appName = StrUtil.sanitizeIdent(rawName)?;
+        if (appName.view() == "" || appName.view() == "unit") {
+            appName = StrUtil.cloneView("lifted_app")?;
+        }
+
+        FsUtil.ensureDir(appDir.view())?;
+        let srcDir = StrUtil.joinPath(appDir.view(), "src")?;
+        FsUtil.ensureDir(srcDir.view())?;
+
+        var pkgNames = Vector<String>.create();
+        var report = String.create();
+        StrUtil.append(mut report, "# CeeSafe Lift Report\n\n| Unit Package | Source File | Stubs |\n|---|---|---|\n")?;
+
+        var totalStubs: u64 = 0;
+        for (i in 0..pkgDirs.length) {
+            let pdir = pkgDirs[i].view();
+            let manifestPath = StrUtil.joinPath(pdir, "ceesafe-anything.json")?;
+            let manifestText = FsUtil.readText(manifestPath.view())?;
+            let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+                Some(n) => n,
+                null => StrUtil.cloneView("port")?,
+            };
+            let unit = match (StrUtil.jsonStringField(manifestText.view(), "unit")?) {
+                Some(u) => u,
+                null => StrUtil.cloneView("-")?,
+            };
+            let pSrcDir = StrUtil.joinPath(pdir, "src")?;
+            let portPath = StrUtil.joinPath(pSrcDir.view(), "port.cee")?;
+            let portSrc = FsUtil.readText(portPath.view())?;
+            let stubs = Gate.countStubs(portSrc.view());
+            totalStubs += stubs;
+
+            var dstName = StrUtil.cloneView(pkgName.view())?;
+            StrUtil.append(mut dstName, "_port.cee")?;
+            let dstPath = StrUtil.joinPath(srcDir.view(), dstName.view())?;
+            FsUtil.writeText(dstPath.view(), portSrc.view())?;
+
+            StrUtil.append(mut report, "| ")?;
+            StrUtil.append(mut report, pkgName.view())?;
+            StrUtil.append(mut report, " | `")?;
+            StrUtil.append(mut report, unit.view())?;
+            StrUtil.append(mut report, "` | ")?;
+            StrUtil.appendNum(mut report, stubs)?;
+            StrUtil.append(mut report, " |\n")?;
+
+            match (pkgNames.push(pkgName)) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+        }
+
+        let tomlText = Lift.buildAppToml(appName.view())?;
+        FsUtil.writeText(tomlPath.view(), tomlText.view())?;
+
+        let mainText = Lift.buildAppMain(appName.view(), pkgNames)?;
+        let mainPath = StrUtil.joinPath(srcDir.view(), "main.cee")?;
+        FsUtil.writeText(mainPath.view(), mainText.view())?;
+
+        let reportPath = StrUtil.joinPath(appDir.view(), "LIFT_REPORT.md")?;
+        FsUtil.writeText(reportPath.view(), report.view())?;
+
+        var summary = String.create();
+        StrUtil.append(mut summary, "Lifted ")?;
+        StrUtil.appendNum(mut summary, pkgNames.length as u64)?;
+        StrUtil.append(mut summary, " unit(s) into pure CeeSafe app at ")?;
+        StrUtil.append(mut summary, appDir.view())?;
+        StrUtil.append(mut summary, " (")?;
+        StrUtil.appendNum(mut summary, totalStubs)?;
+        StrUtil.append(mut summary, " remaining stub(s))\n  report: ")?;
+        StrUtil.append(mut summary, reportPath.view())?;
+        StrUtil.append(mut summary, "\n")?;
+        return Ok(summary);
+    }
+}
