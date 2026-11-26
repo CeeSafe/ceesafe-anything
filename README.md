@@ -42,15 +42,31 @@ ceesafec build -o out/ceesafe-anything
 - **Byte slices**: `const uint8_t *ptr, size_t len` -> `Slice<u8>` via `Slice.fromRaw`
 - **C strings**: `const char *s` -> `Slice<u8>` via `extern "C" fn strlen` + `Slice.fromRaw`
 - **Mutable buffers**: `uint8_t *out, size_t len` -> `SliceMut<u8>` via `SliceMut.fromRaw`
+- **C structs & enums**: `typedef struct` -> generated `src/types.cee` (`FfiCodec`, `fromBytes`) and `typedef enum` -> CeeSafe `enum` + `fromI32`
 
 ## Examples
 
 - `examples/c_checksum/checksum.c` — single-function byte-slice checksum
 - `examples/c_math/math_ops.c` — multi-function scalar and byte-slice math/hashing
 - `examples/c_text/text_ops.c` — `const char *` (`cstr`), mutable `SliceMut<u8>` (`buffer`), and `Slice<u8>` (`bytes`) text utilities
+- `examples/c_geom/geom.c` — C `typedef struct` pointer and `typedef enum` FFI
 - `examples/py_stats/stats.py` — Python unit for `bridge` + `record`
 - `examples/ts_slug/slug.mjs` — Node ESM unit for `bridge` + `record`
 - `examples/go_math/math_ops.go` — Go unit for `bridge` + `record`
+
+## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
+
+Six `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **384/384** differential cases passing against Go, all 7 `gate` checks passing, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
+
+Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums):
+
+| Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
+|---|---|---|---:|---:|---:|---|
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 44.9 | 7.6 | **5.91x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.3 | **2.50x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.4 | 60.8 | **0.96x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 85.3 | 108.5 | **0.79x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 247.1 | 409.3 | **0.60x** | match |
 
 ## Agent Skills
 
