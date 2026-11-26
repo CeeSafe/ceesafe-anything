@@ -56,23 +56,25 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Twelve `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **873/873** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
+Fourteen `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **908/908** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
 
 Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 42.9 | 7.0 | **6.14x** | match |
-| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 132.7 | 24.8 | **5.34x** | match |
-| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 89.8 | 18.4 | **4.88x** | match |
-| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 192.4 | 49.7 | **3.87x** | match |
-| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 236.5 | 76.5 | **3.09x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 30.6 | **2.56x** | match |
-| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.3 | 14.8 | **1.78x** | match |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 42.9 | 7.0 | **6.10x** | match |
+| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 132.7 | 25.0 | **5.31x** | match |
+| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 89.8 | 18.3 | **4.91x** | match |
+| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 35.2 | 7.6 | **4.63x** | match |
+| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 192.4 | 49.5 | **3.88x** | match |
+| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 54.9 | 16.9 | **3.26x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 236.5 | 74.4 | **3.18x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.4 | **2.49x** | match |
+| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.3 | 15.5 | **1.70x** | match |
 | `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 80.6 | 57.3 | **1.41x** | match |
-| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 131.9 | 110.7 | **1.19x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 57.6 | 59.9 | **0.96x** | match |
-| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 52.2 | 70.1 | **0.74x** | match |
+| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 131.9 | 110.9 | **1.19x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 57.6 | 56.7 | **1.02x** | match |
+| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 52.2 | 70.8 | **0.74x** | match |
 
 ## Agent Skills
 
