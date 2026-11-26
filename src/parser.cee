@@ -1,0 +1,490 @@
+// Lightweight multi-language exported-function parser for C, Python, TypeScript/JavaScript, and Go.
+
+public struct ParamSpec {
+    public name: String;
+    public ceeType: String;
+    public abiKind: String;
+}
+
+public struct FnSpec {
+    public name: String;
+    public returnType: String;
+    public params: Vector<ParamSpec>;
+}
+
+public struct Parser {
+    fn isIdentChar(c: u8) -> bool =>
+        (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95;
+
+    fn isIdentStart(c: u8) -> bool =>
+        (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95;
+
+    fn findByte(s: StringView, ch: u8, from: usize) -> usize? {
+        let b = s.bytes();
+        var i = from;
+        while (i < b.length) {
+            if (b[i] == ch) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        return null;
+    }
+
+    fn mapCType(raw: StringView) -> StringView {
+        let t = StrUtil.trim(raw);
+        if (StrUtil.contains(t, "*")) {
+            return "bytes";
+        }
+        if (t == "void") {
+            return "void";
+        }
+        if (t == "bool" || t == "_Bool") {
+            return "bool";
+        }
+        if (t == "double" || t == "float") {
+            return "f64";
+        }
+        if (t == "size_t" || t == "uintptr_t") {
+            return "usize";
+        }
+        if (t == "uint64_t" || t == "unsigned long" || t == "unsigned long long") {
+            return "u64";
+        }
+        if (t == "int64_t" || t == "long" || t == "long long") {
+            return "i64";
+        }
+        if (t == "uint32_t" || t == "unsigned" || t == "unsigned int") {
+            return "u32";
+        }
+        return "i32";
+    }
+
+    fn ceeTypeForAbi(abi: StringView) -> StringView {
+        if (abi == "bytes") {
+            return "Slice<u8>";
+        }
+        if (abi == "void") {
+            return "void";
+        }
+        if (abi == "bool") {
+            return "bool";
+        }
+        if (abi == "f64") {
+            return "f64";
+        }
+        if (abi == "usize") {
+            return "usize";
+        }
+        if (abi == "u64") {
+            return "u64";
+        }
+        if (abi == "i64") {
+            return "i64";
+        }
+        if (abi == "u32") {
+            return "u32";
+        }
+        return "i32";
+    }
+
+    fn mapScriptType(raw: StringView) -> StringView {
+        let t = StrUtil.trim(raw);
+        if (t == "str" || t == "string" || t == "bytes" || t == "[]byte" || t == "Uint8Array") {
+            return "bytes";
+        }
+        if (t == "bool" || t == "boolean") {
+            return "bool";
+        }
+        if (t == "float" || t == "float64" || t == "number") {
+            return "f64";
+        }
+        if (t == "int64" || t == "bigint") {
+            return "i64";
+        }
+        if (t == "uint32") {
+            return "u32";
+        }
+        if (t == "void" || t == "None") {
+            return "void";
+        }
+        return "i32";
+    }
+
+    fn parseCParams(raw: StringView) -> Result<Vector<ParamSpec>, AppError> {
+        var params = Vector<ParamSpec>.create();
+        let trimmed = StrUtil.trim(raw);
+        if (trimmed.bytes().length == 0 || trimmed == "void") {
+            return Ok(params);
+        }
+        let b = trimmed.bytes();
+        var start: usize = 0;
+        var prevWasBytes = false;
+        var idx: usize = 0;
+        loop {
+            var end = start;
+            while (end < b.length && b[end] != 44) {
+                end += 1;
+            }
+            let part = StrUtil.trim(trimmed[start..end]);
+            if (part.bytes().length > 0) {
+                let pb = part.bytes();
+                var nameStart = pb.length;
+                while (nameStart > 0 && Parser.isIdentChar(pb[nameStart - 1])) {
+                    nameStart -= 1;
+                }
+                let pName = if (nameStart < pb.length) {
+                    StrUtil.cloneView(part[nameStart..pb.length])?
+                } else {
+                    var fallback = String.create();
+                    StrUtil.append(mut fallback, "arg")?;
+                    StrUtil.appendNum(mut fallback, idx as u64)?;
+                    fallback
+                };
+                let tyPart = StrUtil.trim(part[0..nameStart]);
+                let abi = Parser.mapCType(tyPart);
+                // Collapse `(const uint8_t *ptr, size_t len)` into a single `bytes` Slice<u8> param.
+                let isLenFollowup = prevWasBytes && (abi == "usize" || abi == "i32" || abi == "u32");
+                if (isLenFollowup) {
+                    prevWasBytes = false;
+                } else {
+                    let ceeTy = Parser.ceeTypeForAbi(abi);
+                    match (params.push(ParamSpec {
+                        name: pName,
+                        ceeType: StrUtil.cloneView(ceeTy)?,
+                        abiKind: StrUtil.cloneView(abi)?,
+                    })) {
+                        Ok() => {}
+                        Err(_) => { return Err(AppError.OutOfMemory); }
+                    }
+                    prevWasBytes = abi == "bytes";
+                }
+                idx += 1;
+            }
+            if (end >= b.length) {
+                break;
+            }
+            start = end + 1;
+        }
+        return Ok(params);
+    }
+
+    fn parseTypedParams(raw: StringView, goStyle: bool) -> Result<Vector<ParamSpec>, AppError> {
+        var params = Vector<ParamSpec>.create();
+        let trimmed = StrUtil.trim(raw);
+        if (trimmed.bytes().length == 0) {
+            return Ok(params);
+        }
+        let b = trimmed.bytes();
+        var start: usize = 0;
+        loop {
+            var end = start;
+            while (end < b.length && b[end] != 44) {
+                end += 1;
+            }
+            let part = StrUtil.trim(trimmed[start..end]);
+            if (part.bytes().length > 0) {
+                if (goStyle) {
+                    // `name type`
+                    match (Parser.findByte(part, 32, 0)) {
+                        Some(sp) => {
+                            let pName = StrUtil.trim(part[0..sp]);
+                            let pTy = StrUtil.trim(part[sp + 1..part.bytes().length]);
+                            let abi = Parser.mapScriptType(pTy);
+                            match (params.push(ParamSpec {
+                                name: StrUtil.cloneView(pName)?,
+                                ceeType: StrUtil.cloneView(Parser.ceeTypeForAbi(abi))?,
+                                abiKind: StrUtil.cloneView(abi)?,
+                            })) {
+                                Ok() => {}
+                                Err(_) => { return Err(AppError.OutOfMemory); }
+                            }
+                        }
+                        null => {}
+                    }
+                } else {
+                    // `name: type` or bare `name`
+                    match (Parser.findByte(part, 58, 0)) {
+                        Some(colon) => {
+                            let pName = StrUtil.trim(part[0..colon]);
+                            let pTy = StrUtil.trim(part[colon + 1..part.bytes().length]);
+                            let abi = Parser.mapScriptType(pTy);
+                            match (params.push(ParamSpec {
+                                name: StrUtil.cloneView(pName)?,
+                                ceeType: StrUtil.cloneView(Parser.ceeTypeForAbi(abi))?,
+                                abiKind: StrUtil.cloneView(abi)?,
+                            })) {
+                                Ok() => {}
+                                Err(_) => { return Err(AppError.OutOfMemory); }
+                            }
+                        }
+                        null => {
+                            match (params.push(ParamSpec {
+                                name: StrUtil.cloneView(part)?,
+                                ceeType: StrUtil.cloneView("i32")?,
+                                abiKind: StrUtil.cloneView("i32")?,
+                            })) {
+                                Ok() => {}
+                                Err(_) => { return Err(AppError.OutOfMemory); }
+                            }
+                        }
+                    }
+                }
+            }
+            if (end >= b.length) {
+                break;
+            }
+            start = end + 1;
+        }
+        return Ok(params);
+    }
+
+    fn extractC(source: StringView) -> Result<Vector<FnSpec>, AppError> {
+        var out = Vector<FnSpec>.create();
+        let b = source.bytes();
+        var start: usize = 0;
+        while (start < b.length) {
+            var end = start;
+            while (end < b.length && b[end] != 10) {
+                end += 1;
+            }
+            let rawLine = source[start..end];
+            let line = StrUtil.trim(rawLine);
+            let isTopLevel = rawLine.bytes().length > 0 && rawLine.bytes()[0] != 32 && rawLine.bytes()[0] != 9;
+            if (isTopLevel &&
+                !StrUtil.startsWith(line, "#") &&
+                !StrUtil.startsWith(line, "//") &&
+                !StrUtil.startsWith(line, "/*") &&
+                !StrUtil.startsWith(line, "*") &&
+                !StrUtil.startsWith(line, "static ") &&
+                !StrUtil.startsWith(line, "typedef ") &&
+                !StrUtil.startsWith(line, "struct ") &&
+                !StrUtil.startsWith(line, "enum ") &&
+                StrUtil.contains(line, "(") &&
+                StrUtil.contains(line, ")")) {
+                let openOpt = Parser.findByte(line, 40, 0);
+                let closeOpt = Parser.findByte(line, 41, 0);
+                match (openOpt) {
+                    Some(open) => {
+                        match (closeOpt) {
+                            Some(close) => {
+                                if (close > open && StrUtil.contains(line[close..line.bytes().length], "{")) {
+                                    let head = StrUtil.trim(line[0..open]);
+                                    let hb = head.bytes();
+                                    var nameStart = hb.length;
+                                    while (nameStart > 0 && Parser.isIdentChar(hb[nameStart - 1])) {
+                                        nameStart -= 1;
+                                    }
+                                    if (nameStart > 0 && nameStart < hb.length) {
+                                        let fnName = head[nameStart..hb.length];
+                                        if (fnName != "main" &&
+                                            fnName != "if" &&
+                                            fnName != "for" && fnName != "while" && fnName != "switch") {
+                                            let retRaw = StrUtil.trim(head[0..nameStart]);
+                                            let retAbi = Parser.mapCType(retRaw);
+                                            if (retAbi != "bytes") {
+                                                let params = Parser.parseCParams(line[open + 1..close])?;
+                                                match (out.push(FnSpec {
+                                                    name: StrUtil.cloneView(fnName)?,
+                                                    returnType: StrUtil.cloneView(Parser.ceeTypeForAbi(retAbi))?,
+                                                    params: params,
+                                                })) {
+                                                    Ok() => {}
+                                                    Err(_) => { return Err(AppError.OutOfMemory); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            null => {}
+                        }
+                    }
+                    null => {}
+                }
+            }
+            start = end + 1;
+        }
+        return Ok(out);
+    }
+
+    fn extractPython(source: StringView) -> Result<Vector<FnSpec>, AppError> {
+        var out = Vector<FnSpec>.create();
+        let b = source.bytes();
+        var start: usize = 0;
+        while (start < b.length) {
+            var end = start;
+            while (end < b.length && b[end] != 10) {
+                end += 1;
+            }
+            let rawLine = source[start..end];
+            if (StrUtil.startsWith(rawLine, "def ")) {
+                let openOpt = Parser.findByte(rawLine, 40, 4);
+                let closeOpt = Parser.findByte(rawLine, 41, 4);
+                match (openOpt) {
+                    Some(open) => {
+                        match (closeOpt) {
+                            Some(close) => {
+                                if (close > open) {
+                                    let fnName = StrUtil.trim(rawLine[4..open]);
+                                    if (fnName.bytes().length > 0 && !StrUtil.startsWith(fnName, "_")) {
+                                        var retTy: StringView = "i32";
+                                        let tail = StrUtil.trim(rawLine[close + 1..rawLine.bytes().length]);
+                                        if (StrUtil.startsWith(tail, "->")) {
+                                            match (Parser.findByte(tail, 58, 2)) {
+                                                Some(colon) => {
+                                                    retTy = Parser.ceeTypeForAbi(Parser.mapScriptType(tail[2..colon]));
+                                                }
+                                                null => {}
+                                            }
+                                        }
+                                        let params = Parser.parseTypedParams(rawLine[open + 1..close], false)?;
+                                        match (out.push(FnSpec {
+                                            name: StrUtil.cloneView(fnName)?,
+                                            returnType: StrUtil.cloneView(retTy)?,
+                                            params: params,
+                                        })) {
+                                            Ok() => {}
+                                            Err(_) => { return Err(AppError.OutOfMemory); }
+                                        }
+                                    }
+                                }
+                            }
+                            null => {}
+                        }
+                    }
+                    null => {}
+                }
+            }
+            start = end + 1;
+        }
+        return Ok(out);
+    }
+
+    fn extractTs(source: StringView) -> Result<Vector<FnSpec>, AppError> {
+        var out = Vector<FnSpec>.create();
+        let b = source.bytes();
+        var start: usize = 0;
+        while (start < b.length) {
+            var end = start;
+            while (end < b.length && b[end] != 10) {
+                end += 1;
+            }
+            let line = StrUtil.trim(source[start..end]);
+            if (StrUtil.startsWith(line, "export function ")) {
+                let openOpt = Parser.findByte(line, 40, 16);
+                let closeOpt = Parser.findByte(line, 41, 16);
+                match (openOpt) {
+                    Some(open) => {
+                        match (closeOpt) {
+                            Some(close) => {
+                                if (close > open) {
+                                    let fnName = StrUtil.trim(line[16..open]);
+                                    if (fnName.bytes().length > 0) {
+                                        var retTy: StringView = "f64";
+                                        let tail = StrUtil.trim(line[close + 1..line.bytes().length]);
+                                        if (StrUtil.startsWith(tail, ":")) {
+                                            match (Parser.findByte(tail, 123, 1)) {
+                                                Some(brace) => {
+                                                    retTy = Parser.ceeTypeForAbi(Parser.mapScriptType(tail[1..brace]));
+                                                }
+                                                null => {}
+                                            }
+                                        }
+                                        let params = Parser.parseTypedParams(line[open + 1..close], false)?;
+                                        match (out.push(FnSpec {
+                                            name: StrUtil.cloneView(fnName)?,
+                                            returnType: StrUtil.cloneView(retTy)?,
+                                            params: params,
+                                        })) {
+                                            Ok() => {}
+                                            Err(_) => { return Err(AppError.OutOfMemory); }
+                                        }
+                                    }
+                                }
+                            }
+                            null => {}
+                        }
+                    }
+                    null => {}
+                }
+            }
+            start = end + 1;
+        }
+        return Ok(out);
+    }
+
+    fn extractGo(source: StringView) -> Result<Vector<FnSpec>, AppError> {
+        var out = Vector<FnSpec>.create();
+        let b = source.bytes();
+        var start: usize = 0;
+        while (start < b.length) {
+            var end = start;
+            while (end < b.length && b[end] != 10) {
+                end += 1;
+            }
+            let rawLine = source[start..end];
+            if (StrUtil.startsWith(rawLine, "func ")) {
+                let openOpt = Parser.findByte(rawLine, 40, 5);
+                let closeOpt = Parser.findByte(rawLine, 41, 5);
+                match (openOpt) {
+                    Some(open) => {
+                        match (closeOpt) {
+                            Some(close) => {
+                                if (close > open) {
+                                    let fnName = StrUtil.trim(rawLine[5..open]);
+                                    let fb = fnName.bytes();
+                                    // Go exported functions start with an uppercase ASCII letter.
+                                    if (fb.length > 0 && fb[0] >= 65 && fb[0] <= 90) {
+                                        var retTy: StringView = "i32";
+                                        let tail = StrUtil.trim(rawLine[close + 1..rawLine.bytes().length]);
+                                        match (Parser.findByte(tail, 123, 0)) {
+                                            Some(brace) => {
+                                                let r = StrUtil.trim(tail[0..brace]);
+                                                if (r.bytes().length > 0) {
+                                                    retTy = Parser.ceeTypeForAbi(Parser.mapScriptType(r));
+                                                } else {
+                                                    retTy = "void";
+                                                }
+                                            }
+                                            null => {}
+                                        }
+                                        let params = Parser.parseTypedParams(rawLine[open + 1..close], true)?;
+                                        match (out.push(FnSpec {
+                                            name: StrUtil.cloneView(fnName)?,
+                                            returnType: StrUtil.cloneView(retTy)?,
+                                            params: params,
+                                        })) {
+                                            Ok() => {}
+                                            Err(_) => { return Err(AppError.OutOfMemory); }
+                                        }
+                                    }
+                                }
+                            }
+                            null => {}
+                        }
+                    }
+                    null => {}
+                }
+            }
+            start = end + 1;
+        }
+        return Ok(out);
+    }
+
+    public fn extractFunctions(lang: StringView, source: StringView) -> Result<Vector<FnSpec>, AppError> {
+        if (lang == "c") {
+            return Parser.extractC(source);
+        }
+        if (lang == "python") {
+            return Parser.extractPython(source);
+        }
+        if (lang == "ts") {
+            return Parser.extractTs(source);
+        }
+        if (lang == "go") {
+            return Parser.extractGo(source);
+        }
+        return Ok(Vector<FnSpec>.create());
+    }
+}

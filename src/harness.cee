@@ -1,5 +1,5 @@
-// `build`, `record`, and `diff`: compile CeeSafe C-ABI shared libraries and run isolated differential tests
-// across C, Python, and TypeScript/JavaScript source units.
+// `build`, `record`, and `diff`: compile CeeSafe C-ABI shared libraries and run multi-function
+// isolated differential tests across C, Python, and TypeScript/JavaScript source units.
 
 public struct Harness {
     public fn detectUnitLang(unit: StringView) -> StringView {
@@ -39,30 +39,68 @@ public struct Harness {
     public fn driverScript() -> Result<String, AppError> {
         var s = String.create();
         StrUtil.append(mut s, "import ctypes, json, os, signal, sys\n\n")?;
-        StrUtil.append(mut s, "DEFAULT_CASES = [\n")?;
-        StrUtil.append(mut s, "    {\"args\": [\"\"]},\n")?;
-        StrUtil.append(mut s, "    {\"args\": [\"hello\"]},\n")?;
-        StrUtil.append(mut s, "    {\"args\": [\"hello world 123\"]},\n")?;
-        StrUtil.append(mut s, "    {\"args\": [\"caf\\u00e9 \\u2603\"]},\n")?;
-        StrUtil.append(mut s, "    {\"args\": [\"a\" * 256]},\n")?;
-        StrUtil.append(mut s, "]\n\n")?;
-        StrUtil.append(mut s, "def call_fn(lib, fn_name, args):\n")?;
-        StrUtil.append(mut s, "    fn = getattr(lib, fn_name)\n")?;
-        StrUtil.append(mut s, "    if len(args) == 1 and isinstance(args[0], str):\n")?;
-        StrUtil.append(mut s, "        data = args[0].encode('utf-8')\n")?;
-        StrUtil.append(mut s, "        fn.argtypes = [ctypes.c_char_p, ctypes.c_size_t]\n")?;
-        StrUtil.append(mut s, "        fn.restype = ctypes.c_int32\n")?;
-        StrUtil.append(mut s, "        return {'ok': int(fn(data, len(data)))}\n")?;
-        StrUtil.append(mut s, "    fn.argtypes = [ctypes.c_int32] * len(args)\n")?;
-        StrUtil.append(mut s, "    fn.restype = ctypes.c_int32\n")?;
-        StrUtil.append(mut s, "    return {'ok': int(fn(*[int(a) for a in args]))}\n\n")?;
-        StrUtil.append(mut s, "def isolated(lib, fn_name, args):\n")?;
+        StrUtil.append(mut s, "CTYPES_MAP = {\n")?;
+        StrUtil.append(mut s, "    'i32': ctypes.c_int32, 'u32': ctypes.c_uint32,\n")?;
+        StrUtil.append(mut s, "    'i64': ctypes.c_int64, 'u64': ctypes.c_uint64,\n")?;
+        StrUtil.append(mut s, "    'usize': ctypes.c_size_t, 'f64': ctypes.c_double,\n")?;
+        StrUtil.append(mut s, "    'bool': ctypes.c_bool, 'void': None,\n")?;
+        StrUtil.append(mut s, "}\n\n")?;
+        StrUtil.append(mut s, "SAMPLES = {\n")?;
+        StrUtil.append(mut s, "    'bytes': ['', 'hello', 'hello world 123', 'caf\\u00e9 \\u2603', 'a' * 128],\n")?;
+        StrUtil.append(mut s, "    'i32': [0, 1, -1, 42, -42, 1000],\n")?;
+        StrUtil.append(mut s, "    'i64': [0, 1, -1, 42, -100000],\n")?;
+        StrUtil.append(mut s, "    'u32': [0, 1, 42, 1000],\n")?;
+        StrUtil.append(mut s, "    'u64': [0, 1, 42, 100000],\n")?;
+        StrUtil.append(mut s, "    'usize': [0, 1, 16, 256],\n")?;
+        StrUtil.append(mut s, "    'f64': [0.0, 1.5, -3.25, 100.0],\n")?;
+        StrUtil.append(mut s, "    'bool': [False, True],\n")?;
+        StrUtil.append(mut s, "}\n\n")?;
+        StrUtil.append(mut s, "def gen_cases(exports):\n")?;
+        StrUtil.append(mut s, "    out = []\n")?;
+        StrUtil.append(mut s, "    for exp in exports:\n")?;
+        StrUtil.append(mut s, "        params = exp.get('params', [])\n")?;
+        StrUtil.append(mut s, "        if not params:\n")?;
+        StrUtil.append(mut s, "            out.append({'fn': exp['name'], 'symbol': exp['symbol'], 'args': []})\n")?;
+        StrUtil.append(mut s, "            continue\n")?;
+        StrUtil.append(mut s, "        pools = [SAMPLES.get(p['kind'], [0, 1]) for p in params]\n")?;
+        StrUtil.append(mut s, "        n = max(len(p) for p in pools)\n")?;
+        StrUtil.append(mut s, "        for i in range(n):\n")?;
+        StrUtil.append(mut s, "            args = [pool[i % len(pool)] for pool in pools]\n")?;
+        StrUtil.append(mut s, "            out.append({'fn': exp['name'], 'symbol': exp['symbol'], 'args': args})\n")?;
+        StrUtil.append(mut s, "    return out\n\n")?;
+        StrUtil.append(mut s, "def call_fn(lib, sym_name, spec, args):\n")?;
+        StrUtil.append(mut s, "    fn = getattr(lib, sym_name)\n")?;
+        StrUtil.append(mut s, "    argtypes, c_args = [], []\n")?;
+        StrUtil.append(mut s, "    for p, val in zip(spec.get('params', []), args):\n")?;
+        StrUtil.append(mut s, "        k = p['kind']\n")?;
+        StrUtil.append(mut s, "        if k == 'bytes':\n")?;
+        StrUtil.append(mut s, "            data = str(val).encode('utf-8')\n")?;
+        StrUtil.append(mut s, "            argtypes.extend([ctypes.c_char_p, ctypes.c_size_t])\n")?;
+        StrUtil.append(mut s, "            c_args.extend([data, len(data)])\n")?;
+        StrUtil.append(mut s, "        elif k == 'f64':\n")?;
+        StrUtil.append(mut s, "            argtypes.append(ctypes.c_double)\n")?;
+        StrUtil.append(mut s, "            c_args.append(float(val))\n")?;
+        StrUtil.append(mut s, "        elif k == 'bool':\n")?;
+        StrUtil.append(mut s, "            argtypes.append(ctypes.c_bool)\n")?;
+        StrUtil.append(mut s, "            c_args.append(bool(val))\n")?;
+        StrUtil.append(mut s, "        else:\n")?;
+        StrUtil.append(mut s, "            argtypes.append(CTYPES_MAP.get(k, ctypes.c_int32))\n")?;
+        StrUtil.append(mut s, "            c_args.append(int(val))\n")?;
+        StrUtil.append(mut s, "    fn.argtypes = argtypes\n")?;
+        StrUtil.append(mut s, "    ret_k = spec.get('return', 'i32')\n")?;
+        StrUtil.append(mut s, "    fn.restype = CTYPES_MAP.get(ret_k, ctypes.c_int32)\n")?;
+        StrUtil.append(mut s, "    res = fn(*c_args)\n")?;
+        StrUtil.append(mut s, "    if ret_k == 'void': return {'ok': None}\n")?;
+        StrUtil.append(mut s, "    if ret_k == 'f64': return {'ok': float(res)}\n")?;
+        StrUtil.append(mut s, "    if ret_k == 'bool': return {'ok': bool(res)}\n")?;
+        StrUtil.append(mut s, "    return {'ok': int(res)}\n\n")?;
+        StrUtil.append(mut s, "def isolated(lib, sym_name, spec, args):\n")?;
         StrUtil.append(mut s, "    r, w = os.pipe()\n")?;
         StrUtil.append(mut s, "    pid = os.fork()\n")?;
         StrUtil.append(mut s, "    if pid == 0:\n")?;
         StrUtil.append(mut s, "        os.close(r)\n")?;
         StrUtil.append(mut s, "        try:\n")?;
-        StrUtil.append(mut s, "            res = call_fn(lib, fn_name, args)\n")?;
+        StrUtil.append(mut s, "            res = call_fn(lib, sym_name, spec, args)\n")?;
         StrUtil.append(mut s, "        except Exception as e:\n")?;
         StrUtil.append(mut s, "            res = {'error': f'{type(e).__name__}: {e}'}\n")?;
         StrUtil.append(mut s, "        os.write(w, json.dumps(res).encode('utf-8'))\n")?;
@@ -79,19 +117,22 @@ public struct Harness {
         StrUtil.append(mut s, "        return {'error': 'crash: ' + signal.Signals(os.WTERMSIG(status)).name}\n")?;
         StrUtil.append(mut s, "    return json.loads(buf) if buf else {'error': 'crash: no result'}\n\n")?;
         StrUtil.append(mut s, "mode = sys.argv[1]\n")?;
-        StrUtil.append(mut s, "lib_path, cases_path, default_fn = sys.argv[2], sys.argv[3], sys.argv[4]\n")?;
+        StrUtil.append(mut s, "lib_path, manifest_path, cases_path = sys.argv[2], sys.argv[3], sys.argv[4]\n")?;
+        StrUtil.append(mut s, "manifest = json.load(open(manifest_path, encoding='utf-8'))\n")?;
+        StrUtil.append(mut s, "exports = manifest.get('exports', [])\n")?;
+        StrUtil.append(mut s, "by_name = {e['name']: e for e in exports}\n")?;
         StrUtil.append(mut s, "lib = ctypes.CDLL(lib_path)\n")?;
         StrUtil.append(mut s, "if mode == 'record':\n")?;
         StrUtil.append(mut s, "    inputs_path = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else ''\n")?;
         StrUtil.append(
             mut s,
-            "    cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else DEFAULT_CASES\n",
+            "    cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else gen_cases(exports)\n",
         )?;
         StrUtil.append(mut s, "    with open(cases_path, 'w', encoding='utf-8') as out:\n")?;
         StrUtil.append(mut s, "        for c in cases:\n")?;
-        StrUtil.append(mut s, "            fn_name = c.get('fn', default_fn)\n")?;
-        StrUtil.append(mut s, "            rec = {'fn': fn_name, 'args': c['args']}\n")?;
-        StrUtil.append(mut s, "            rec.update(isolated(lib, fn_name, c['args']))\n")?;
+        StrUtil.append(mut s, "            spec = by_name[c['fn']]\n")?;
+        StrUtil.append(mut s, "            rec = {'fn': c['fn'], 'symbol': spec['symbol'], 'args': c['args']}\n")?;
+        StrUtil.append(mut s, "            rec.update(isolated(lib, c['fn'], spec, c['args']))\n")?;
         StrUtil.append(mut s, "            out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n")?;
         StrUtil.append(mut s, "    print(f'recorded {len(cases)} cases to {cases_path}')\n")?;
         StrUtil.append(mut s, "elif mode == 'diff':\n")?;
@@ -102,11 +143,16 @@ public struct Harness {
         )?;
         StrUtil.append(mut s, "    passed, failed, mismatches = 0, 0, []\n")?;
         StrUtil.append(mut s, "    for c in cases:\n")?;
-        StrUtil.append(mut s, "        fn_name = c.get('fn', default_fn)\n")?;
+        StrUtil.append(mut s, "        spec = by_name.get(c['fn'])\n")?;
+        StrUtil.append(mut s, "        if not spec:\n")?;
+        StrUtil.append(mut s, "            failed += 1\n")?;
+        StrUtil.append(mut s, "            mismatches.append({'fn': c['fn'], 'error': 'unknown export'})\n")?;
+        StrUtil.append(mut s, "            continue\n")?;
         StrUtil.append(mut s, "        if str(c.get('error', '')).startswith('crash:'):\n")?;
         StrUtil.append(mut s, "            passed += 1\n")?;
         StrUtil.append(mut s, "            continue\n")?;
-        StrUtil.append(mut s, "        got = isolated(lib, fn_name, c['args'])\n")?;
+        StrUtil.append(mut s, "        sym = c.get('symbol', spec['symbol'])\n")?;
+        StrUtil.append(mut s, "        got = isolated(lib, sym, spec, c['args'])\n")?;
         StrUtil.append(mut s, "        exp = {'error': c['error']} if 'error' in c else {'ok': c.get('ok')}\n")?;
         StrUtil.append(mut s, "        if json.dumps(got, sort_keys=True) == json.dumps(exp, sort_keys=True):\n")?;
         StrUtil.append(mut s, "            passed += 1\n")?;
@@ -114,7 +160,7 @@ public struct Harness {
         StrUtil.append(mut s, "            failed += 1\n")?;
         StrUtil.append(
             mut s,
-            "            mismatches.append({'fn': fn_name, 'args': c['args'], 'expected': exp, 'actual': got})\n",
+            "            mismatches.append({'fn': c['fn'], 'symbol': sym, 'args': c['args'], 'expected': exp, 'actual': got})\n",
         )?;
         StrUtil.append(
             mut s,
@@ -129,30 +175,36 @@ public struct Harness {
     public fn pyRecordScript() -> Result<String, AppError> {
         var s = String.create();
         StrUtil.append(mut s, "import importlib.util, json, sys\n\n")?;
-        StrUtil.append(mut s, "DEFAULT_CASES = [\n")?;
-        StrUtil.append(mut s, "    {'args': ['']},\n")?;
-        StrUtil.append(mut s, "    {'args': ['hello']},\n")?;
-        StrUtil.append(mut s, "    {'args': ['hello world 123']},\n")?;
-        StrUtil.append(mut s, "    {'args': ['caf\\u00e9 \\u2603']},\n")?;
-        StrUtil.append(mut s, "    {'args': ['a' * 256]},\n")?;
-        StrUtil.append(mut s, "]\n\n")?;
-        StrUtil.append(mut s, "unit_path, cases_path, default_fn = sys.argv[1], sys.argv[2], sys.argv[3]\n")?;
+        StrUtil.append(
+            mut s,
+            "SAMPLES = {'bytes': ['', 'hello', 'caf\\u00e9 \\u2603'], 'i32': [0, 1, -1, 42], 'i64': [0, 1, -1, 42], 'u32': [0, 1, 42], 'f64': [0.0, 1.5, -3.25], 'bool': [False, True]}\n\n",
+        )?;
+        StrUtil.append(mut s, "unit_path, manifest_path, cases_path = sys.argv[1], sys.argv[2], sys.argv[3]\n")?;
         StrUtil.append(mut s, "inputs_path = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else ''\n")?;
+        StrUtil.append(mut s, "manifest = json.load(open(manifest_path, encoding='utf-8'))\n")?;
+        StrUtil.append(mut s, "exports = manifest.get('exports', [])\n")?;
+        StrUtil.append(mut s, "by_name = {e['name']: e for e in exports}\n")?;
         StrUtil.append(mut s, "spec = importlib.util.spec_from_file_location('orig_unit', unit_path)\n")?;
         StrUtil.append(mut s, "mod = importlib.util.module_from_spec(spec)\n")?;
         StrUtil.append(mut s, "spec.loader.exec_module(mod)\n")?;
+        StrUtil.append(mut s, "if inputs_path:\n")?;
+        StrUtil.append(mut s, "    cases = [json.loads(l) for l in open(inputs_path) if l.strip()]\n")?;
+        StrUtil.append(mut s, "else:\n")?;
+        StrUtil.append(mut s, "    cases = []\n")?;
+        StrUtil.append(mut s, "    for exp in exports:\n")?;
+        StrUtil.append(mut s, "        pools = [SAMPLES.get(p['kind'], [0, 1]) for p in exp.get('params', [])]\n")?;
+        StrUtil.append(mut s, "        n = max((len(p) for p in pools), default=1)\n")?;
+        StrUtil.append(mut s, "        for i in range(n):\n")?;
         StrUtil.append(
             mut s,
-            "cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else DEFAULT_CASES\n",
+            "            cases.append({'fn': exp['name'], 'args': [pool[i % len(pool)] for pool in pools]})\n",
         )?;
         StrUtil.append(mut s, "with open(cases_path, 'w', encoding='utf-8') as out:\n")?;
         StrUtil.append(mut s, "    for c in cases:\n")?;
-        StrUtil.append(mut s, "        fn_name = c.get('fn', default_fn)\n")?;
-        StrUtil.append(mut s, "        py_name = c.get('source_fn', 'run')\n")?;
-        StrUtil.append(mut s, "        rec = {'fn': fn_name, 'args': c['args']}\n")?;
+        StrUtil.append(mut s, "        exp = by_name[c['fn']]\n")?;
+        StrUtil.append(mut s, "        rec = {'fn': c['fn'], 'symbol': exp['symbol'], 'args': c['args']}\n")?;
         StrUtil.append(mut s, "        try:\n")?;
-        StrUtil.append(mut s, "            fn = getattr(mod, py_name)\n")?;
-        StrUtil.append(mut s, "            rec['ok'] = fn(*c['args'])\n")?;
+        StrUtil.append(mut s, "            rec['ok'] = getattr(mod, c['fn'])(*c['args'])\n")?;
         StrUtil.append(mut s, "        except Exception as e:\n")?;
         StrUtil.append(mut s, "            rec['error'] = f'{type(e).__name__}: {e}'\n")?;
         StrUtil.append(mut s, "        out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n")?;
@@ -163,29 +215,39 @@ public struct Harness {
         var s = String.create();
         StrUtil.append(mut s, "import fs from 'node:fs';\n")?;
         StrUtil.append(mut s, "import { pathToFileURL } from 'node:url';\n\n")?;
-        StrUtil.append(mut s, "const DEFAULT_CASES = [\n")?;
-        StrUtil.append(mut s, "  { args: [''] },\n")?;
-        StrUtil.append(mut s, "  { args: ['hello'] },\n")?;
-        StrUtil.append(mut s, "  { args: ['hello world 123'] },\n")?;
-        StrUtil.append(mut s, "  { args: ['caf\\u00e9 \\u2603'] },\n")?;
-        StrUtil.append(mut s, "  { args: ['a'.repeat(256)] },\n")?;
-        StrUtil.append(mut s, "];\n\n")?;
-        StrUtil.append(mut s, "const [unitPath, casesPath, defaultFn, inputsPath] = process.argv.slice(2);\n")?;
-        StrUtil.append(mut s, "const mod = await import(pathToFileURL(unitPath).href);\n")?;
         StrUtil.append(
             mut s,
-            "const cases = inputsPath ? fs.readFileSync(inputsPath, 'utf8').split('\\n').filter(Boolean).map(JSON.parse) : DEFAULT_CASES;\n",
+            "const SAMPLES = { bytes: ['', 'hello', 'caf\\u00e9 \\u2603'], i32: [0, 1, -1, 42], i64: [0, 1, -1, 42], u32: [0, 1, 42], f64: [0.0, 1.5, -3.25], bool: [false, true] };\n",
         )?;
+        StrUtil.append(mut s, "const [unitPath, manifestPath, casesPath, inputsPath] = process.argv.slice(2);\n")?;
+        StrUtil.append(mut s, "const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));\n")?;
+        StrUtil.append(mut s, "const exports = manifest.exports || [];\n")?;
+        StrUtil.append(mut s, "const byName = Object.fromEntries(exports.map(e => [e.name, e]));\n")?;
+        StrUtil.append(mut s, "const mod = await import(pathToFileURL(unitPath).href);\n")?;
+        StrUtil.append(mut s, "let cases = [];\n")?;
+        StrUtil.append(mut s, "if (inputsPath) {\n")?;
+        StrUtil.append(
+            mut s,
+            "  cases = fs.readFileSync(inputsPath, 'utf8').split('\\n').filter(Boolean).map(JSON.parse);\n",
+        )?;
+        StrUtil.append(mut s, "} else {\n")?;
+        StrUtil.append(mut s, "  for (const exp of exports) {\n")?;
+        StrUtil.append(mut s, "    const pools = (exp.params || []).map(p => SAMPLES[p.kind] || [0, 1]);\n")?;
+        StrUtil.append(mut s, "    const n = pools.length ? Math.max(...pools.map(p => p.length)) : 1;\n")?;
+        StrUtil.append(
+            mut s,
+            "    for (let i = 0; i < n; i++) cases.push({ fn: exp.name, args: pools.map(p => p[i % p.length]) });\n",
+        )?;
+        StrUtil.append(mut s, "  }\n")?;
+        StrUtil.append(mut s, "}\n")?;
         StrUtil.append(mut s, "const lines = [];\n")?;
         StrUtil.append(mut s, "for (const c of cases) {\n")?;
-        StrUtil.append(mut s, "  const fnName = c.fn || defaultFn;\n")?;
-        StrUtil.append(mut s, "  const srcFn = c.source_fn || 'run';\n")?;
-        StrUtil.append(mut s, "  const rec = { fn: fnName, args: c.args };\n")?;
-        StrUtil.append(mut s, "  try {\n")?;
-        StrUtil.append(mut s, "    rec.ok = await mod[srcFn](...c.args);\n")?;
-        StrUtil.append(mut s, "  } catch (e) {\n")?;
-        StrUtil.append(mut s, "    rec.error = `${e?.name || 'Error'}: ${e?.message || String(e)}`;\n")?;
-        StrUtil.append(mut s, "  }\n")?;
+        StrUtil.append(mut s, "  const exp = byName[c.fn];\n")?;
+        StrUtil.append(mut s, "  const rec = { fn: c.fn, symbol: exp.symbol, args: c.args };\n")?;
+        StrUtil.append(
+            mut s,
+            "  try { rec.ok = await mod[c.fn](...c.args); } catch (e) { rec.error = `${e?.name || 'Error'}: ${e?.message || String(e)}`; }\n",
+        )?;
         StrUtil.append(mut s, "  lines.push(JSON.stringify(rec));\n")?;
         StrUtil.append(mut s, "}\n")?;
         StrUtil.append(mut s, "fs.writeFileSync(casesPath, lines.join('\\n') + '\\n', 'utf8');\n")?;
@@ -284,20 +346,11 @@ public struct Harness {
             Some(u) => u,
             null => { return Err(AppError.InvalidArg); },
         };
-        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
-            Some(n) => n,
-            null => StrUtil.cloneView("port")?,
-        };
 
         let unitPath = StrUtil.joinPath(root.view(), unit.view())?;
         let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
         FsUtil.ensureDir(workDir.view())?;
         let casesPath = StrUtil.joinPath(pkgDir, "cases.jsonl")?;
-
-        var defaultFn = String.create();
-        StrUtil.append(mut defaultFn, "port_")?;
-        StrUtil.append(mut defaultFn, pkgName.view())?;
-        StrUtil.append(mut defaultFn, "_run")?;
 
         let lang = Harness.detectUnitLang(unit.view());
         if (lang == "python") {
@@ -307,8 +360,8 @@ public struct Harness {
             var args = Vector<StringView>.create();
             match (args.push(pyScriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
             match (args.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
             match (args.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
-            match (args.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
             match (inputsOpt) {
                 Some(inp) => {
                     match (args.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
@@ -332,8 +385,8 @@ public struct Harness {
             var args = Vector<StringView>.create();
             match (args.push(jsScriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
             match (args.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
             match (args.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
-            match (args.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
             match (inputsOpt) {
                 Some(inp) => {
                     match (args.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
@@ -375,8 +428,8 @@ public struct Harness {
         match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push("record")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(origLib.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
-        match (pyArgs.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (inputsOpt) {
             Some(inp) => {
                 match (pyArgs.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
@@ -419,17 +472,13 @@ public struct Harness {
         let driverPath = Harness.writeDriver(pkgDir)?;
         let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
         let diffJson = StrUtil.joinPath(workDir.view(), "diff.json")?;
-        var defaultFn = String.create();
-        StrUtil.append(mut defaultFn, "port_")?;
-        StrUtil.append(mut defaultFn, pkgName.view())?;
-        StrUtil.append(mut defaultFn, "_run")?;
 
         var pyArgs = Vector<StringView>.create();
         match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push("diff")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(libPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
-        match (pyArgs.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (pyArgs.push(diffJson.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
 
         let ran = match (Process.capture("python3", pyArgs, null)) {

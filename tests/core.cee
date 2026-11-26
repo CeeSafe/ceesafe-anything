@@ -155,3 +155,56 @@ fn harness_driver_script_has_record_and_diff() -> Result<void, TestFailure> {
     }
     return Ok();
 }
+
+@test
+fn parser_extracts_c_py_ts_go_functions() -> Result<void, TestFailure> {
+    let cSrc = "static int helper(int x) { return x; }\nint32_t add_i32(int32_t a, int32_t b) {\n    return a + b;\n}\nint32_t hash_bytes(const uint8_t *ptr, size_t len) {\n    return 0;\n}\n";
+    let cFns = match (Parser.extractFunctions("c", cSrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("c parse failed")); },
+    };
+    if (cFns.length != 2 || cFns[0].name.view() != "add_i32" || cFns[1].name.view() != "hash_bytes") {
+        return Err(fail("unexpected C functions"));
+    }
+    if (cFns[1].params.length != 1 || cFns[1].params[0].abiKind.view() != "bytes") {
+        return Err(fail("expected collapsed bytes param"));
+    }
+
+    let pySrc = "def _priv(x: int) -> int:\n    return x\ndef score(text: str, weight: int) -> int:\n    return weight\n";
+    let pyFns = match (Parser.extractFunctions("python", pySrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("python parse failed")); },
+    };
+    if (pyFns.length != 1 || pyFns[0].name.view() != "score" || pyFns[0].params.length != 2) {
+        return Err(fail("unexpected Python functions"));
+    }
+
+    let tsSrc = "export function add(a: number, b: number): number {\n  return a + b;\n}\n";
+    let tsFns = match (Parser.extractFunctions("ts", tsSrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("ts parse failed")); },
+    };
+    if (tsFns.length != 1 || tsFns[0].name.view() != "add" || tsFns[0].returnType.view() != "f64") {
+        return Err(fail("unexpected TS functions"));
+    }
+
+    let goSrc = "func helper(x int) int { return x }\nfunc Sum(a int32, b int32) int32 {\n    return a + b\n}\n";
+    let goFns = match (Parser.extractFunctions("go", goSrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("go parse failed")); },
+    };
+    if (goFns.length != 1 || goFns[0].name.view() != "Sum") {
+        return Err(fail("unexpected Go functions"));
+    }
+
+    let bridgeCode = match (Bridge.buildBridgeCee("math_ops.c", "math_ops", cFns)) {
+        Ok(s) => s,
+        Err(_) => { return Err(fail("bridge codegen failed")); },
+    };
+    if (!StrUtil.contains(bridgeCode.view(), "@export(\"port_math_ops_add_i32\")")
+        || !StrUtil.contains(bridgeCode.view(), "@export(\"port_math_ops_hash_bytes\")")
+        || !StrUtil.contains(bridgeCode.view(), "Slice.fromRaw(")) {
+        return Err(fail("bridge code missing expected exports"));
+    }
+    return Ok();
+}

@@ -1,9 +1,10 @@
-// `analyze`: walk a repository, detect source languages, count LOC, and scan porting risks.
+// `analyze`: walk a repository, detect source languages, count LOC, exported functions, and porting risks.
 
 public struct FileSummary {
     public path: String;
     public lang: String;
     public lines: u64;
+    public functions: u64;
     public risks: u64;
 }
 
@@ -46,7 +47,7 @@ public struct Analyze {
         return null;
     }
 
-    fn countLinesAndRisks(text: StringView, lang: StringView) -> u64 {
+    fn countLines(text: StringView) -> u64 {
         var lines: u64 = 0;
         let b = text.bytes();
         var start: usize = 0;
@@ -65,7 +66,6 @@ public struct Analyze {
                 lines += 1;
             }
         }
-        let _ = lang;
         return lines;
     }
 
@@ -119,13 +119,15 @@ public struct Analyze {
                 Some(lang) => {
                     match (FsUtil.readText(childFull.view())) {
                         Ok(text) => {
-                            let lines = Analyze.countLinesAndRisks(text.view(), lang);
+                            let lines = Analyze.countLines(text.view());
                             let risks = Analyze.countRisks(text.view());
+                            let fns = Parser.extractFunctions(lang, text.view())?;
                             let langOwned = StrUtil.cloneView(lang)?;
                             match (out.push(FileSummary {
                                 path: childRel,
                                 lang: langOwned,
                                 lines: lines,
+                                functions: fns.length as u64,
                                 risks: risks,
                             })) {
                                 Ok() => {}
@@ -161,6 +163,8 @@ public struct Analyze {
                 StrUtil.append(mut out, files[i].lang.view())?;
                 StrUtil.append(mut out, "\",\"lines\":")?;
                 StrUtil.appendNum(mut out, files[i].lines)?;
+                StrUtil.append(mut out, ",\"functions\":")?;
+                StrUtil.appendNum(mut out, files[i].functions)?;
                 StrUtil.append(mut out, ",\"risks\":")?;
                 StrUtil.appendNum(mut out, files[i].risks)?;
                 StrUtil.append(mut out, "}")?;
@@ -179,6 +183,8 @@ public struct Analyze {
             StrUtil.append(mut out, "\t")?;
             StrUtil.appendNum(mut out, files[i].lines)?;
             StrUtil.append(mut out, " loc\t")?;
+            StrUtil.appendNum(mut out, files[i].functions)?;
+            StrUtil.append(mut out, " fn(s)\t")?;
             StrUtil.appendNum(mut out, files[i].risks)?;
             StrUtil.append(mut out, " risk(s)\t")?;
             StrUtil.append(mut out, files[i].path.view())?;
