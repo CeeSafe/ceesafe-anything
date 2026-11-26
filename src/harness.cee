@@ -38,7 +38,7 @@ public struct Harness {
 
     public fn driverScript() -> Result<String, AppError> {
         var s = String.create();
-        StrUtil.append(mut s, "import ctypes, json, os, signal, sys\n\n")?;
+        StrUtil.append(mut s, "import ctypes, json, os, signal, sys, time\n\n")?;
         StrUtil.append(mut s, "CTYPES_MAP = {\n")?;
         StrUtil.append(mut s, "    'i32': ctypes.c_int32, 'u32': ctypes.c_uint32,\n")?;
         StrUtil.append(mut s, "    'i64': ctypes.c_int64, 'u64': ctypes.c_uint64,\n")?;
@@ -47,6 +47,8 @@ public struct Harness {
         StrUtil.append(mut s, "}\n\n")?;
         StrUtil.append(mut s, "SAMPLES = {\n")?;
         StrUtil.append(mut s, "    'bytes': ['', 'hello', 'hello world 123', 'caf\\u00e9 \\u2603', 'a' * 128],\n")?;
+        StrUtil.append(mut s, "    'cstr': ['', 'hello', 'hello world 123', 'caf\\u00e9 \\u2603'],\n")?;
+        StrUtil.append(mut s, "    'buffer': ['abcd', 'hello world'],\n")?;
         StrUtil.append(mut s, "    'i32': [0, 1, -1, 42, -42, 1000],\n")?;
         StrUtil.append(mut s, "    'i64': [0, 1, -1, 42, -100000],\n")?;
         StrUtil.append(mut s, "    'u32': [0, 1, 42, 1000],\n")?;
@@ -77,6 +79,15 @@ public struct Harness {
         StrUtil.append(mut s, "            data = str(val).encode('utf-8')\n")?;
         StrUtil.append(mut s, "            argtypes.extend([ctypes.c_char_p, ctypes.c_size_t])\n")?;
         StrUtil.append(mut s, "            c_args.extend([data, len(data)])\n")?;
+        StrUtil.append(mut s, "        elif k == 'cstr':\n")?;
+        StrUtil.append(mut s, "            data = str(val).encode('utf-8')\n")?;
+        StrUtil.append(mut s, "            argtypes.append(ctypes.c_char_p)\n")?;
+        StrUtil.append(mut s, "            c_args.append(data)\n")?;
+        StrUtil.append(mut s, "        elif k == 'buffer':\n")?;
+        StrUtil.append(mut s, "            raw = str(val).encode('utf-8')\n")?;
+        StrUtil.append(mut s, "            buf = ctypes.create_string_buffer(raw, max(len(raw), 1))\n")?;
+        StrUtil.append(mut s, "            argtypes.extend([ctypes.c_void_p, ctypes.c_size_t])\n")?;
+        StrUtil.append(mut s, "            c_args.extend([ctypes.cast(buf, ctypes.c_void_p), len(raw)])\n")?;
         StrUtil.append(mut s, "        elif k == 'f64':\n")?;
         StrUtil.append(mut s, "            argtypes.append(ctypes.c_double)\n")?;
         StrUtil.append(mut s, "            c_args.append(float(val))\n")?;
@@ -169,6 +180,40 @@ public struct Harness {
         StrUtil.append(mut s, "    json.dump(summary, open(out_json, 'w', encoding='utf-8'), indent=2)\n")?;
         StrUtil.append(mut s, "    print(f'{passed}/{len(cases)} cases matched ({failed} failed)')\n")?;
         StrUtil.append(mut s, "    sys.exit(0 if failed == 0 else 1)\n")?;
+        StrUtil.append(mut s, "elif mode == 'bench':\n")?;
+        StrUtil.append(mut s, "    port_lib_path, out_json, out_txt = sys.argv[5], sys.argv[6], sys.argv[7]\n")?;
+        StrUtil.append(mut s, "    port_lib = ctypes.CDLL(port_lib_path)\n")?;
+        StrUtil.append(
+            mut s,
+            "    cases = [json.loads(l) for l in open(cases_path, encoding='utf-8') if l.strip()]\n",
+        )?;
+        StrUtil.append(mut s, "    groups = {}\n")?;
+        StrUtil.append(mut s, "    for c in cases:\n")?;
+        StrUtil.append(mut s, "        if 'error' not in c: groups.setdefault(c['fn'], []).append(c)\n")?;
+        StrUtil.append(mut s, "    rows, lines = [], ['fn\\tcases\\toriginal_ns\\tceesafe_ns\\tspeedup']\n")?;
+        StrUtil.append(mut s, "    for fn_name, items in groups.items():\n")?;
+        StrUtil.append(mut s, "        spec = by_name[fn_name]\n")?;
+        StrUtil.append(mut s, "        def measure(target_lib, sym):\n")?;
+        StrUtil.append(mut s, "            for c in items: call_fn(target_lib, sym, spec, c['args'])\n")?;
+        StrUtil.append(mut s, "            passes, t0 = 0, time.perf_counter_ns()\n")?;
+        StrUtil.append(mut s, "            while True:\n")?;
+        StrUtil.append(mut s, "                for c in items: call_fn(target_lib, sym, spec, c['args'])\n")?;
+        StrUtil.append(mut s, "                passes += 1\n")?;
+        StrUtil.append(mut s, "                dt = time.perf_counter_ns() - t0\n")?;
+        StrUtil.append(mut s, "                if dt >= 100_000_000: return dt / (passes * len(items))\n")?;
+        StrUtil.append(mut s, "        orig_ns = measure(lib, fn_name)\n")?;
+        StrUtil.append(mut s, "        cee_ns = measure(port_lib, spec['symbol'])\n")?;
+        StrUtil.append(mut s, "        sp = orig_ns / cee_ns if cee_ns > 0 else 1.0\n")?;
+        StrUtil.append(
+            mut s,
+            "        rows.append({'fn': fn_name, 'cases': len(items), 'original_ns': orig_ns, 'ceesafe_ns': cee_ns, 'speedup': sp})\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "        lines.append(f'{fn_name}\\t{len(items)}\\t{orig_ns:.1f}\\t{cee_ns:.1f}\\t{sp:.2f}x')\n",
+        )?;
+        StrUtil.append(mut s, "    json.dump(rows, open(out_json, 'w', encoding='utf-8'), indent=2)\n")?;
+        StrUtil.append(mut s, "    open(out_txt, 'w', encoding='utf-8').write('\\n'.join(lines) + '\\n')\n")?;
         return Ok(s);
     }
 
@@ -486,5 +531,54 @@ public struct Harness {
             Err(e) => { return Err(AppErrors.fromIo(e)); },
         };
         return Ok(ran.status == 0);
+    }
+
+    public fn bench(pkgDir: StringView) -> Result<String, AppError> {
+        let casesPath = StrUtil.joinPath(pkgDir, "cases.jsonl")?;
+        if (!FsUtil.fileExists(casesPath.view())) {
+            return Err(AppError.NotFound);
+        }
+        let manifestPath = StrUtil.joinPath(pkgDir, "ceesafe-anything.json")?;
+        let manifestText = FsUtil.readText(manifestPath.view())?;
+        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+            Some(n) => n,
+            null => StrUtil.cloneView("port")?,
+        };
+        let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
+        let origLib = StrUtil.joinPath(workDir.view(), "original.dylib")?;
+        if (!FsUtil.fileExists(origLib.view())) {
+            return Err(AppError.NotFound);
+        }
+        var libFile = String.create();
+        StrUtil.append(mut libFile, "lib")?;
+        StrUtil.append(mut libFile, pkgName.view())?;
+        StrUtil.append(mut libFile, ".dylib")?;
+        let outDir = StrUtil.joinPath(pkgDir, "out")?;
+        let portLib = StrUtil.joinPath(outDir.view(), libFile.view())?;
+        if (!FsUtil.fileExists(portLib.view())) {
+            let _ = Harness.build(pkgDir)?;
+        }
+        let driverPath = Harness.writeDriver(pkgDir)?;
+        let benchJson = StrUtil.joinPath(workDir.view(), "bench.json")?;
+        let benchTxt = StrUtil.joinPath(workDir.view(), "bench.txt")?;
+
+        var pyArgs = Vector<StringView>.create();
+        match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push("bench")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(origLib.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(portLib.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(benchJson.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(benchTxt.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+
+        let ran = match (Process.capture("python3", pyArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        if (ran.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+        return FsUtil.readText(benchTxt.view());
     }
 }

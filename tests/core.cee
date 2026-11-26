@@ -208,3 +208,40 @@ fn parser_extracts_c_py_ts_go_functions() -> Result<void, TestFailure> {
     }
     return Ok();
 }
+
+@test
+fn cstr_buffer_and_shadow_codegen() -> Result<void, TestFailure> {
+    let src = "int32_t word_count(const char *s) {\n    return 0;\n}\nint32_t fill_buf(uint8_t *out, size_t n) {\n    return 0;\n}\n";
+    let fns = match (Parser.extractFunctions("c", src)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("parse failed")); },
+    };
+    if (fns.length != 2
+        || fns[0].params[0].abiKind.view() != "cstr"
+        || fns[1].params[0].abiKind.view() != "buffer"
+        || fns[1].params[0].ceeType.view() != "SliceMut<u8>") {
+        return Err(fail("unexpected cstr/buffer param kinds"));
+    }
+    let bridge = match (Bridge.buildBridgeCee("text.c", "text", fns)) {
+        Ok(s) => s,
+        Err(_) => { return Err(fail("bridge failed")); },
+    };
+    if (!StrUtil.contains(bridge.view(), "fn strlen(s: *u8) -> usize;")
+        || !StrUtil.contains(bridge.view(), "SliceMut.fromRaw(")) {
+        return Err(fail("bridge missing strlen or SliceMut.fromRaw"));
+    }
+    let shadowC = match (Shadow.generateC("text.c", "text", fns)) {
+        Ok(s) => s,
+        Err(_) => { return Err(fail("shadow C failed")); },
+    };
+    let flags = match (Shadow.generateFlags(fns)) {
+        Ok(s) => s,
+        Err(_) => { return Err(fail("shadow flags failed")); },
+    };
+    if (!StrUtil.contains(shadowC.view(), "word_count__original")
+        || !StrUtil.contains(shadowC.view(), "port_text_fill_buf")
+        || !StrUtil.contains(flags.view(), "-Dword_count=word_count__original")) {
+        return Err(fail("shadow output missing expected wrappers or flags"));
+    }
+    return Ok();
+}

@@ -128,6 +128,14 @@ public struct Mcp {
             )?;
             StrUtil.append(
                 mut out,
+                "{\"name\":\"bench\",\"description\":\"Benchmark original vs CeeSafe shared library over cases.jsonl\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"shadow\",\"description\":\"Generate C shadow wrapper running original and CeeSafe side by side\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
                 "{\"name\":\"gate\",\"description\":\"Run ceesafec fmt, check --deny-warnings, test, unsafe, stub, and build gates\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
             )?;
             StrUtil.append(
@@ -214,6 +222,28 @@ public struct Mcp {
                                 return Ok(Some(Mcp.jsonToolText(id.view(), "all recorded cases matched", false)?));
                             }
                             Ok(false) => { return Ok(Some(Mcp.jsonToolText(id.view(), "mismatches found", true)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "bench") {
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Harness.bench(pkg.view())) {
+                            Ok(table) => { return Ok(Some(Mcp.jsonToolText(id.view(), table.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "shadow") {
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Shadow.run(pkg.view())) {
+                            Ok(msg) => { return Ok(Some(Mcp.jsonToolText(id.view(), msg.view(), false)?)); }
                             Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
                         }
                     }

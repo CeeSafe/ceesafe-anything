@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ceesafe-anything
+        uses: actions/checkout@v4
+
+      - name: Check for ceesafec
+        id: check_ceesafec
+        run: |
+          if command -v ceesafec >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Format, check, test, and build
+        if: steps.check_ceesafec.outputs.found == 'true'
+        run: |
+          ceesafec fmt --check
+          ceesafec check --deny-warnings
+          ceesafec test
+          ceesafec build -o out/ceesafe-anything
+          ./out/ceesafe-anything --version

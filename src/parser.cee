@@ -34,7 +34,13 @@ public struct Parser {
     fn mapCType(raw: StringView) -> StringView {
         let t = StrUtil.trim(raw);
         if (StrUtil.contains(t, "*")) {
-            return "bytes";
+            if (StrUtil.contains(t, "const")) {
+                if (StrUtil.contains(t, "char")) {
+                    return "cstr";
+                }
+                return "bytes";
+            }
+            return "buffer";
         }
         if (t == "void") {
             return "void";
@@ -61,8 +67,11 @@ public struct Parser {
     }
 
     fn ceeTypeForAbi(abi: StringView) -> StringView {
-        if (abi == "bytes") {
+        if (abi == "bytes" || abi == "cstr") {
             return "Slice<u8>";
+        }
+        if (abi == "buffer") {
+            return "SliceMut<u8>";
         }
         if (abi == "void") {
             return "void";
@@ -119,7 +128,7 @@ public struct Parser {
         }
         let b = trimmed.bytes();
         var start: usize = 0;
-        var prevWasBytes = false;
+        var prevWasPtr = false;
         var idx: usize = 0;
         loop {
             var end = start;
@@ -143,10 +152,13 @@ public struct Parser {
                 };
                 let tyPart = StrUtil.trim(part[0..nameStart]);
                 let abi = Parser.mapCType(tyPart);
-                // Collapse `(const uint8_t *ptr, size_t len)` into a single `bytes` Slice<u8> param.
-                let isLenFollowup = prevWasBytes && (abi == "usize" || abi == "i32" || abi == "u32");
+                // Collapse `(ptr, len)` pairs into a single `bytes` or `buffer` param.
+                let isLenFollowup = prevWasPtr && (abi == "usize" || abi == "i32" || abi == "u32");
                 if (isLenFollowup) {
-                    prevWasBytes = false;
+                    if (params.length > 0 && params[params.length - 1].abiKind.view() == "cstr") {
+                        params[params.length - 1].abiKind = StrUtil.cloneView("bytes")?;
+                    }
+                    prevWasPtr = false;
                 } else {
                     let ceeTy = Parser.ceeTypeForAbi(abi);
                     match (params.push(ParamSpec {
@@ -157,7 +169,7 @@ public struct Parser {
                         Ok() => {}
                         Err(_) => { return Err(AppError.OutOfMemory); }
                     }
-                    prevWasBytes = abi == "bytes";
+                    prevWasPtr = abi == "bytes" || abi == "cstr" || abi == "buffer";
                 }
                 idx += 1;
             }
@@ -282,7 +294,7 @@ public struct Parser {
                                             fnName != "for" && fnName != "while" && fnName != "switch") {
                                             let retRaw = StrUtil.trim(head[0..nameStart]);
                                             let retAbi = Parser.mapCType(retRaw);
-                                            if (retAbi != "bytes") {
+                                            if (retAbi != "bytes" && retAbi != "cstr" && retAbi != "buffer") {
                                                 let params = Parser.parseCParams(line[open + 1..close])?;
                                                 match (out.push(FnSpec {
                                                     name: StrUtil.cloneView(fnName)?,

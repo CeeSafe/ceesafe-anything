@@ -12,6 +12,12 @@ fn printUsage() {
     Console.writeLine("  ceesafe-anything build <pkg>                  Emit C with ceesafec and link a shared library");
     Console.writeLine("  ceesafe-anything diff <pkg>                   Replay cases.jsonl against the CeeSafe library");
     Console.writeLine(
+        "  ceesafe-anything bench <pkg>                  Time original vs CeeSafe library over cases.jsonl",
+    );
+    Console.writeLine(
+        "  ceesafe-anything shadow <pkg>                 Generate C shadow wrapper comparing both side by side",
+    );
+    Console.writeLine(
         "  ceesafe-anything gate <pkg>                   Run fmt, check, test, stub, unsafe, build, and diff gates",
     );
     Console.writeLine("  ceesafe-anything lookup <lang> <dep>          Look up the CeeSafe library equivalent");
@@ -135,6 +141,26 @@ fn main() -> i32 {
                 Console.writeLine("mismatches found (see .ceesafe-anything/diff.json)");
                 return 1;
             }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "bench") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Harness.bench(pkg)) {
+            Ok(table) => { Console.write(table.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "shadow") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Shadow.run(pkg)) {
+            Ok(msg) => { Console.write(msg.view()); return 0; }
             Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
         }
     }
