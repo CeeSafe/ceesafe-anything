@@ -56,17 +56,18 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Six `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **384/384** differential cases passing against Go, all 7 `gate` checks passing, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
+Seven `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **550/550** differential cases passing against Go, all 7 `gate` checks passing on every unit, and `subject_match` passing `nats-server`'s own `go test` sublist suite via cgo).
 
 Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, identical inputs and verified checksums):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 44.9 | 7.1 | **6.32x** | match |
-| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 247.1 | 75.7 | **3.26x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.0 | **2.52x** | match |
-| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 85.3 | 57.0 | **1.50x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.4 | 60.8 | **0.96x** | match |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 43.3 | 7.1 | **6.08x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 238.2 | 72.8 | **3.27x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 32.2 | **2.43x** | match |
+| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 26.3 | 16.4 | **1.60x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 79.8 | 59.9 | **1.33x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 56.9 | 56.8 | **1.00x** | match |
 
 ## Agent Skills
 

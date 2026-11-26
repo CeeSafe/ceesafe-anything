@@ -498,11 +498,21 @@ public struct Harness {
         StrUtil.append(mut libFile, ".dylib")?;
         let libPath = StrUtil.joinPath(outDir.view(), libFile.view())?;
 
+        var installNameFlag = String.create();
+        StrUtil.append(mut installNameFlag, "-Wl,-install_name,@rpath/")?;
+        StrUtil.append(mut installNameFlag, libFile.view())?;
+
         var ccArgs = Vector<StringView>.create();
         match (ccArgs.push("-shared")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (ccArgs.push("-fPIC")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (ccArgs.push("-O2")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (ccArgs.push("-w")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        if (FsUtil.fileExists("/usr/bin/sw_vers")) {
+            match (ccArgs.push(installNameFlag.view())) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+        }
         match (ccArgs.push("-I")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (ccArgs.push(cDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
         match (ccArgs.push("-o")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
