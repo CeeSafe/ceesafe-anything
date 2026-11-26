@@ -62,11 +62,11 @@ Head-to-head native throughput on Apple Silicon (pure Go vs CeeSafe compiled via
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 44.9 | 7.1 | **6.36x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.3 | **2.50x** | match |
-| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 85.3 | 57.6 | **1.48x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.4 | 57.2 | **1.02x** | match |
-| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 247.1 | 379.3 | **0.65x** | match |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 44.9 | 7.1 | **6.32x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 247.1 | 75.7 | **3.26x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 78.2 | 31.0 | **2.52x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 85.3 | 57.0 | **1.50x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.4 | 60.8 | **0.96x** | match |
 
 ## Agent Skills
 
