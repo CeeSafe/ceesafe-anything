@@ -1,3 +1,0 @@
--rcommon.txt
-pytest
-ruff

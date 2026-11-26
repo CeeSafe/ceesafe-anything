@@ -1,0 +1,156 @@
+// ceesafe-anything: incremental, behavior-preserving migration of existing codebases to CeeSafe.
+
+fn printUsage() {
+    Console.writeLine("ceesafe-anything 0.1.0 — Port existing codebases to CeeSafe");
+    Console.writeLine("");
+    Console.writeLine("Usage:");
+    Console.writeLine("  ceesafe-anything doctor                       Check ceesafec, cc, and optional runtimes");
+    Console.writeLine("  ceesafe-anything setup [claude|codex|cursor]  Print MCP configuration for your coding agent");
+    Console.writeLine("  ceesafe-anything analyze <root> [--json]      Map repository units, LOC, and porting risks");
+    Console.writeLine("  ceesafe-anything bridge <root> <unit> [out]   Scaffold a CeeSafe C-ABI library package");
+    Console.writeLine("  ceesafe-anything record <pkg> [inputs.jsonl]  Record original behavior into cases.jsonl");
+    Console.writeLine("  ceesafe-anything build <pkg>                  Emit C with ceesafec and link a shared library");
+    Console.writeLine("  ceesafe-anything diff <pkg>                   Replay cases.jsonl against the CeeSafe library");
+    Console.writeLine(
+        "  ceesafe-anything gate <pkg>                   Run fmt, check, test, stub, unsafe, build, and diff gates",
+    );
+    Console.writeLine("  ceesafe-anything lookup <lang> <dep>          Look up the CeeSafe library equivalent");
+    Console.writeLine("  ceesafe-anything mcp                          Start the stdio MCP server");
+}
+
+fn argAt(index: usize) -> StringView? => Process.argument(index);
+
+fn main() -> i32 {
+    let argc = Process.argumentCount();
+    if (argc < 2) {
+        printUsage();
+        return 0;
+    }
+    let cmd = match (argAt(1)) {
+        Some(c) => c,
+        null => { printUsage(); return 1; },
+    };
+
+    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
+        printUsage();
+        return 0;
+    }
+    if (cmd == "--version" || cmd == "-V") {
+        Console.writeLine("ceesafe-anything 0.1.0");
+        return 0;
+    }
+    if (cmd == "doctor") {
+        return Doctor.run();
+    }
+    if (cmd == "setup") {
+        let agent = match (argAt(2)) {
+            Some(a) => a,
+            null => "claude",
+        };
+        return Setup.run(agent);
+    }
+    if (cmd == "mcp") {
+        return Mcp.serve();
+    }
+    if (cmd == "lookup") {
+        let lang = match (argAt(2)) {
+            Some(v) => v,
+            null => { Console.writeLine("usage: ceesafe-anything lookup <lang> <dep>"); return 1; },
+        };
+        let dep = match (argAt(3)) {
+            Some(v) => v,
+            null => { Console.writeLine("usage: ceesafe-anything lookup <lang> <dep>"); return 1; },
+        };
+        return LibraryMap.runCli(lang, dep);
+    }
+    if (cmd == "analyze") {
+        let root = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        let jsonMode = match (argAt(3)) {
+            Some(f) => f == "--json",
+            null => false,
+        };
+        match (Analyze.run(root, jsonMode)) {
+            Ok(report) => { Console.write(report.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "bridge") {
+        let root = match (argAt(2)) {
+            Some(v) => v,
+            null => { Console.writeLine("usage: ceesafe-anything bridge <root> <unit> [out]"); return 1; },
+        };
+        let unit = match (argAt(3)) {
+            Some(v) => v,
+            null => { Console.writeLine("usage: ceesafe-anything bridge <root> <unit> [out]"); return 1; },
+        };
+        let outOpt = argAt(4);
+        match (Bridge.run(root, unit, outOpt)) {
+            Ok(msg) => { Console.write(msg.view()); return 0; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "record") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        let inputsOpt = argAt(3);
+        match (Harness.record(pkg, inputsOpt)) {
+            Ok(casesPath) => {
+                Console.write("recorded ");
+                Console.writeLine(casesPath.view());
+                return 0;
+            }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "build") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Harness.build(pkg)) {
+            Ok(lib) => {
+                Console.write("built ");
+                Console.writeLine(lib.view());
+                return 0;
+            }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "diff") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Harness.diff(pkg)) {
+            Ok(true) => {
+                Console.writeLine("all recorded cases matched");
+                return 0;
+            }
+            Ok(false) => {
+                Console.writeLine("mismatches found (see .ceesafe-anything/diff.json)");
+                return 1;
+            }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "gate") {
+        let pkg = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        match (Gate.run(pkg)) {
+            Ok(passed) => { return if (passed) 0 else 1; }
+            Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+
+    Console.write("unknown command: ");
+    Console.writeLine(cmd);
+    printUsage();
+    return 1;
+}

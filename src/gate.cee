@@ -1,0 +1,189 @@
+// `gate`: definition of done for a CeeSafe port:
+// 1. `ceesafec fmt --check`
+// 2. `ceesafec check --deny-warnings`
+// 3. `ceesafec test`
+// 4. Every `unsafe` in `src/*.cee` has a `// SAFETY:` comment immediately above it
+// 5. No `panic("unimplemented:` stubs remain in `src/port.cee`
+// 6. C-ABI shared library builds cleanly
+
+public struct Gate {
+    public fn countStubs(source: StringView) -> u64 {
+        var count: u64 = 0;
+        let b = source.bytes();
+        var start: usize = 0;
+        for (i in 0..b.length) {
+            if (b[i] == 10) {
+                let line = StrUtil.trim(source[start..i]);
+                if (!StrUtil.startsWith(line, "//") && StrUtil.contains(line, "panic(\"unimplemented:")) {
+                    count += 1;
+                }
+                start = i + 1;
+            }
+        }
+        if (start < b.length) {
+            let line = StrUtil.trim(source[start..b.length]);
+            if (!StrUtil.startsWith(line, "//") && StrUtil.contains(line, "panic(\"unimplemented:")) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    public fn countUnexplainedUnsafe(source: StringView) -> u64 {
+        var unexplained: u64 = 0;
+        let b = source.bytes();
+        var start: usize = 0;
+        var prevHadSafety = false;
+        for (i in 0..b.length) {
+            if (b[i] == 10) {
+                let line = StrUtil.trim(source[start..i]);
+                if (StrUtil.startsWith(line, "//")) {
+                    if (StrUtil.contains(line, "SAFETY:")) {
+                        prevHadSafety = true;
+                    }
+                } else {
+                    if (StrUtil.contains(line, "unsafe") && !prevHadSafety) {
+                        unexplained += 1;
+                    }
+                    prevHadSafety = false;
+                }
+                start = i + 1;
+            }
+        }
+        if (start < b.length) {
+            let line = StrUtil.trim(source[start..b.length]);
+            if (!StrUtil.startsWith(line, "//") && StrUtil.contains(line, "unsafe") && !prevHadSafety) {
+                unexplained += 1;
+            }
+        }
+        return unexplained;
+    }
+
+    fn runCeesafec(pkgDir: StringView, subArgs: Vector<StringView>) -> bool {
+        var shArgs = Vector<StringView>.create();
+        match (shArgs.push("-c")) { Ok() => {} Err(_) => { return false; } }
+        match (shArgs.push("cd \"$1\" && shift && exec ceesafec \"$@\"")) { Ok() => {} Err(_) => { return false; } }
+        match (shArgs.push("_")) { Ok() => {} Err(_) => { return false; } }
+        match (shArgs.push(pkgDir)) { Ok() => {} Err(_) => { return false; } }
+        for (i in 0..subArgs.length) {
+            match (shArgs.push(subArgs[i])) { Ok() => {} Err(_) => { return false; } }
+        }
+        match (Process.capture("/bin/sh", shArgs, null)) {
+            Ok(out) => { return out.status == 0; }
+            Err(_) => { return false; }
+        }
+    }
+
+    fn printCheck(name: StringView, passed: bool, detail: StringView) {
+        if (passed) {
+            Console.write("pass  ");
+        } else {
+            Console.write("FAIL  ");
+        }
+        Console.write(name);
+        Console.write("  ");
+        Console.writeLine(detail);
+    }
+
+    public fn run(pkgDir: StringView) -> Result<bool, AppError> {
+        var allPassed = true;
+
+        // 1. fmt
+        var fmtArgs = Vector<StringView>.create();
+        match (fmtArgs.push("fmt")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (fmtArgs.push("--check")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        let fmtOk = Gate.runCeesafec(pkgDir, fmtArgs);
+        Gate.printCheck("fmt     ", fmtOk, if (fmtOk) "formatted" else "run `ceesafec fmt`");
+        if (!fmtOk) { allPassed = false; }
+
+        // 2. check --deny-warnings
+        var chkArgs = Vector<StringView>.create();
+        match (chkArgs.push("check")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (chkArgs.push("--deny-warnings")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        let chkOk = Gate.runCeesafec(pkgDir, chkArgs);
+        Gate.printCheck("check   ", chkOk, if (chkOk) "no warnings" else "fix compiler diagnostics");
+        if (!chkOk) { allPassed = false; }
+
+        // 3. test
+        var tstArgs = Vector<StringView>.create();
+        match (tstArgs.push("test")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        let tstOk = Gate.runCeesafec(pkgDir, tstArgs);
+        Gate.printCheck("test    ", tstOk, if (tstOk) "passed" else "run `ceesafec test` to inspect failures");
+        if (!tstOk) { allPassed = false; }
+
+        // 4. ported stubs
+        let portPath = StrUtil.joinPath(pkgDir, "src/port.cee")?;
+        let stubs = match (FsUtil.readText(portPath.view())) {
+            Ok(text) => Gate.countStubs(text.view()),
+            Err(_) => 1,
+        };
+        let portedOk = stubs == 0;
+        Gate.printCheck(
+            "ported  ",
+            portedOk,
+            if (portedOk) "no unimplemented stubs in src/port.cee" else "unimplemented stubs remain in src/port.cee",
+        );
+        if (!portedOk) { allPassed = false; }
+
+        // 5. unsafe safety comments
+        let srcDir = StrUtil.joinPath(pkgDir, "src")?;
+        var badUnsafe: u64 = 0;
+        match (Directory.list(srcDir.view())) {
+            Ok(entries) => {
+                for (i in 0..entries.length) {
+                    let name = entries[i].view();
+                    if (StrUtil.endsWith(name, ".cee")) {
+                        let p = StrUtil.joinPath(srcDir.view(), name)?;
+                        match (FsUtil.readText(p.view())) {
+                            Ok(text) => { badUnsafe += Gate.countUnexplainedUnsafe(text.view()); }
+                            Err(_) => {}
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        let unsafeOk = badUnsafe == 0;
+        Gate.printCheck(
+            "unsafe  ",
+            unsafeOk,
+            if (unsafeOk) "every unsafe block has a // SAFETY: comment" else "add // SAFETY: above each unsafe block",
+        );
+        if (!unsafeOk) { allPassed = false; }
+
+        // 6. shared library build
+        let buildOk = match (Harness.build(pkgDir)) {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+        Gate.printCheck(
+            "build   ",
+            buildOk,
+            if (buildOk) "C-ABI shared library built" else "ceesafec build / cc link failed",
+        );
+        if (!buildOk) { allPassed = false; }
+
+        // 7. recorded behavior diff (when cases.jsonl is present)
+        let casesPath = StrUtil.joinPath(pkgDir, "cases.jsonl")?;
+        if (FsUtil.fileExists(casesPath.view())) {
+            let diffOk = if (buildOk) {
+                match (Harness.diff(pkgDir)) {
+                    Ok(ok) => ok,
+                    Err(_) => false,
+                }
+            } else {
+                false
+            };
+            Gate.printCheck(
+                "behavior",
+                diffOk,
+                if (diffOk) "all recorded cases match" else "mismatches found (inspect .ceesafe-anything/diff.json)",
+            );
+            if (!diffOk) { allPassed = false; }
+        } else {
+            Console.writeLine("skip  behavior  no cases.jsonl yet (run `ceesafe-anything record <pkg>`)");
+        }
+
+        return Ok(allPassed);
+    }
+}

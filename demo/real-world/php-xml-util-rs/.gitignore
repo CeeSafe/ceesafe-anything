@@ -1,7 +1,0 @@
-target/
-.rust-anything/
-ruby/*.so
-ruby/*.bundle
-php/*.so
-php/*.dylib
-php/*.dll

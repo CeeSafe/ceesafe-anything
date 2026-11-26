@@ -1,0 +1,441 @@
+// `build`, `record`, and `diff`: compile CeeSafe C-ABI shared libraries and run isolated differential tests
+// across C, Python, and TypeScript/JavaScript source units.
+
+public struct Harness {
+    public fn detectUnitLang(unit: StringView) -> StringView {
+        if (StrUtil.endsWith(unit, ".py")) {
+            return "python";
+        }
+        if (StrUtil.endsWith(unit, ".ts") || StrUtil.endsWith(unit, ".tsx") ||
+            StrUtil.endsWith(unit, ".js") || StrUtil.endsWith(unit, ".mjs")) {
+            return "ts";
+        }
+        if (StrUtil.endsWith(unit, ".go")) {
+            return "go";
+        }
+        return "c";
+    }
+
+    fn collectCFiles(dir: StringView, out: borrow mut Vector<String>) -> Result<void, AppError> {
+        let entries = match (Directory.list(dir)) {
+            Ok(list) => list,
+            Err(_) => { return Ok(); },
+        };
+        for (i in 0..entries.length) {
+            let name = entries[i].view();
+            let full = StrUtil.joinPath(dir, name)?;
+            if (StrUtil.endsWith(name, ".c")) {
+                match (out.push(full)) {
+                    Ok() => {}
+                    Err(_) => { return Err(AppError.OutOfMemory); }
+                }
+            } else if (!StrUtil.contains(name, ".")) {
+                Harness.collectCFiles(full.view(), mut out)?;
+            }
+        }
+        return Ok();
+    }
+
+    public fn driverScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import ctypes, json, os, signal, sys\n\n")?;
+        StrUtil.append(mut s, "DEFAULT_CASES = [\n")?;
+        StrUtil.append(mut s, "    {\"args\": [\"\"]},\n")?;
+        StrUtil.append(mut s, "    {\"args\": [\"hello\"]},\n")?;
+        StrUtil.append(mut s, "    {\"args\": [\"hello world 123\"]},\n")?;
+        StrUtil.append(mut s, "    {\"args\": [\"caf\\u00e9 \\u2603\"]},\n")?;
+        StrUtil.append(mut s, "    {\"args\": [\"a\" * 256]},\n")?;
+        StrUtil.append(mut s, "]\n\n")?;
+        StrUtil.append(mut s, "def call_fn(lib, fn_name, args):\n")?;
+        StrUtil.append(mut s, "    fn = getattr(lib, fn_name)\n")?;
+        StrUtil.append(mut s, "    if len(args) == 1 and isinstance(args[0], str):\n")?;
+        StrUtil.append(mut s, "        data = args[0].encode('utf-8')\n")?;
+        StrUtil.append(mut s, "        fn.argtypes = [ctypes.c_char_p, ctypes.c_size_t]\n")?;
+        StrUtil.append(mut s, "        fn.restype = ctypes.c_int32\n")?;
+        StrUtil.append(mut s, "        return {'ok': int(fn(data, len(data)))}\n")?;
+        StrUtil.append(mut s, "    fn.argtypes = [ctypes.c_int32] * len(args)\n")?;
+        StrUtil.append(mut s, "    fn.restype = ctypes.c_int32\n")?;
+        StrUtil.append(mut s, "    return {'ok': int(fn(*[int(a) for a in args]))}\n\n")?;
+        StrUtil.append(mut s, "def isolated(lib, fn_name, args):\n")?;
+        StrUtil.append(mut s, "    r, w = os.pipe()\n")?;
+        StrUtil.append(mut s, "    pid = os.fork()\n")?;
+        StrUtil.append(mut s, "    if pid == 0:\n")?;
+        StrUtil.append(mut s, "        os.close(r)\n")?;
+        StrUtil.append(mut s, "        try:\n")?;
+        StrUtil.append(mut s, "            res = call_fn(lib, fn_name, args)\n")?;
+        StrUtil.append(mut s, "        except Exception as e:\n")?;
+        StrUtil.append(mut s, "            res = {'error': f'{type(e).__name__}: {e}'}\n")?;
+        StrUtil.append(mut s, "        os.write(w, json.dumps(res).encode('utf-8'))\n")?;
+        StrUtil.append(mut s, "        os._exit(0)\n")?;
+        StrUtil.append(mut s, "    os.close(w)\n")?;
+        StrUtil.append(mut s, "    buf = b''\n")?;
+        StrUtil.append(mut s, "    while True:\n")?;
+        StrUtil.append(mut s, "        chunk = os.read(r, 65536)\n")?;
+        StrUtil.append(mut s, "        if not chunk: break\n")?;
+        StrUtil.append(mut s, "        buf += chunk\n")?;
+        StrUtil.append(mut s, "    os.close(r)\n")?;
+        StrUtil.append(mut s, "    _, status = os.waitpid(pid, 0)\n")?;
+        StrUtil.append(mut s, "    if os.WIFSIGNALED(status):\n")?;
+        StrUtil.append(mut s, "        return {'error': 'crash: ' + signal.Signals(os.WTERMSIG(status)).name}\n")?;
+        StrUtil.append(mut s, "    return json.loads(buf) if buf else {'error': 'crash: no result'}\n\n")?;
+        StrUtil.append(mut s, "mode = sys.argv[1]\n")?;
+        StrUtil.append(mut s, "lib_path, cases_path, default_fn = sys.argv[2], sys.argv[3], sys.argv[4]\n")?;
+        StrUtil.append(mut s, "lib = ctypes.CDLL(lib_path)\n")?;
+        StrUtil.append(mut s, "if mode == 'record':\n")?;
+        StrUtil.append(mut s, "    inputs_path = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else ''\n")?;
+        StrUtil.append(
+            mut s,
+            "    cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else DEFAULT_CASES\n",
+        )?;
+        StrUtil.append(mut s, "    with open(cases_path, 'w', encoding='utf-8') as out:\n")?;
+        StrUtil.append(mut s, "        for c in cases:\n")?;
+        StrUtil.append(mut s, "            fn_name = c.get('fn', default_fn)\n")?;
+        StrUtil.append(mut s, "            rec = {'fn': fn_name, 'args': c['args']}\n")?;
+        StrUtil.append(mut s, "            rec.update(isolated(lib, fn_name, c['args']))\n")?;
+        StrUtil.append(mut s, "            out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n")?;
+        StrUtil.append(mut s, "    print(f'recorded {len(cases)} cases to {cases_path}')\n")?;
+        StrUtil.append(mut s, "elif mode == 'diff':\n")?;
+        StrUtil.append(mut s, "    out_json = sys.argv[5]\n")?;
+        StrUtil.append(
+            mut s,
+            "    cases = [json.loads(l) for l in open(cases_path, encoding='utf-8') if l.strip()]\n",
+        )?;
+        StrUtil.append(mut s, "    passed, failed, mismatches = 0, 0, []\n")?;
+        StrUtil.append(mut s, "    for c in cases:\n")?;
+        StrUtil.append(mut s, "        fn_name = c.get('fn', default_fn)\n")?;
+        StrUtil.append(mut s, "        if str(c.get('error', '')).startswith('crash:'):\n")?;
+        StrUtil.append(mut s, "            passed += 1\n")?;
+        StrUtil.append(mut s, "            continue\n")?;
+        StrUtil.append(mut s, "        got = isolated(lib, fn_name, c['args'])\n")?;
+        StrUtil.append(mut s, "        exp = {'error': c['error']} if 'error' in c else {'ok': c.get('ok')}\n")?;
+        StrUtil.append(mut s, "        if json.dumps(got, sort_keys=True) == json.dumps(exp, sort_keys=True):\n")?;
+        StrUtil.append(mut s, "            passed += 1\n")?;
+        StrUtil.append(mut s, "        else:\n")?;
+        StrUtil.append(mut s, "            failed += 1\n")?;
+        StrUtil.append(
+            mut s,
+            "            mismatches.append({'fn': fn_name, 'args': c['args'], 'expected': exp, 'actual': got})\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "    summary = {'total': len(cases), 'passed': passed, 'failed': failed, 'mismatches': mismatches}\n",
+        )?;
+        StrUtil.append(mut s, "    json.dump(summary, open(out_json, 'w', encoding='utf-8'), indent=2)\n")?;
+        StrUtil.append(mut s, "    print(f'{passed}/{len(cases)} cases matched ({failed} failed)')\n")?;
+        StrUtil.append(mut s, "    sys.exit(0 if failed == 0 else 1)\n")?;
+        return Ok(s);
+    }
+
+    public fn pyRecordScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import importlib.util, json, sys\n\n")?;
+        StrUtil.append(mut s, "DEFAULT_CASES = [\n")?;
+        StrUtil.append(mut s, "    {'args': ['']},\n")?;
+        StrUtil.append(mut s, "    {'args': ['hello']},\n")?;
+        StrUtil.append(mut s, "    {'args': ['hello world 123']},\n")?;
+        StrUtil.append(mut s, "    {'args': ['caf\\u00e9 \\u2603']},\n")?;
+        StrUtil.append(mut s, "    {'args': ['a' * 256]},\n")?;
+        StrUtil.append(mut s, "]\n\n")?;
+        StrUtil.append(mut s, "unit_path, cases_path, default_fn = sys.argv[1], sys.argv[2], sys.argv[3]\n")?;
+        StrUtil.append(mut s, "inputs_path = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else ''\n")?;
+        StrUtil.append(mut s, "spec = importlib.util.spec_from_file_location('orig_unit', unit_path)\n")?;
+        StrUtil.append(mut s, "mod = importlib.util.module_from_spec(spec)\n")?;
+        StrUtil.append(mut s, "spec.loader.exec_module(mod)\n")?;
+        StrUtil.append(
+            mut s,
+            "cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else DEFAULT_CASES\n",
+        )?;
+        StrUtil.append(mut s, "with open(cases_path, 'w', encoding='utf-8') as out:\n")?;
+        StrUtil.append(mut s, "    for c in cases:\n")?;
+        StrUtil.append(mut s, "        fn_name = c.get('fn', default_fn)\n")?;
+        StrUtil.append(mut s, "        py_name = c.get('source_fn', 'run')\n")?;
+        StrUtil.append(mut s, "        rec = {'fn': fn_name, 'args': c['args']}\n")?;
+        StrUtil.append(mut s, "        try:\n")?;
+        StrUtil.append(mut s, "            fn = getattr(mod, py_name)\n")?;
+        StrUtil.append(mut s, "            rec['ok'] = fn(*c['args'])\n")?;
+        StrUtil.append(mut s, "        except Exception as e:\n")?;
+        StrUtil.append(mut s, "            rec['error'] = f'{type(e).__name__}: {e}'\n")?;
+        StrUtil.append(mut s, "        out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n")?;
+        return Ok(s);
+    }
+
+    public fn nodeRecordScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import fs from 'node:fs';\n")?;
+        StrUtil.append(mut s, "import { pathToFileURL } from 'node:url';\n\n")?;
+        StrUtil.append(mut s, "const DEFAULT_CASES = [\n")?;
+        StrUtil.append(mut s, "  { args: [''] },\n")?;
+        StrUtil.append(mut s, "  { args: ['hello'] },\n")?;
+        StrUtil.append(mut s, "  { args: ['hello world 123'] },\n")?;
+        StrUtil.append(mut s, "  { args: ['caf\\u00e9 \\u2603'] },\n")?;
+        StrUtil.append(mut s, "  { args: ['a'.repeat(256)] },\n")?;
+        StrUtil.append(mut s, "];\n\n")?;
+        StrUtil.append(mut s, "const [unitPath, casesPath, defaultFn, inputsPath] = process.argv.slice(2);\n")?;
+        StrUtil.append(mut s, "const mod = await import(pathToFileURL(unitPath).href);\n")?;
+        StrUtil.append(
+            mut s,
+            "const cases = inputsPath ? fs.readFileSync(inputsPath, 'utf8').split('\\n').filter(Boolean).map(JSON.parse) : DEFAULT_CASES;\n",
+        )?;
+        StrUtil.append(mut s, "const lines = [];\n")?;
+        StrUtil.append(mut s, "for (const c of cases) {\n")?;
+        StrUtil.append(mut s, "  const fnName = c.fn || defaultFn;\n")?;
+        StrUtil.append(mut s, "  const srcFn = c.source_fn || 'run';\n")?;
+        StrUtil.append(mut s, "  const rec = { fn: fnName, args: c.args };\n")?;
+        StrUtil.append(mut s, "  try {\n")?;
+        StrUtil.append(mut s, "    rec.ok = await mod[srcFn](...c.args);\n")?;
+        StrUtil.append(mut s, "  } catch (e) {\n")?;
+        StrUtil.append(mut s, "    rec.error = `${e?.name || 'Error'}: ${e?.message || String(e)}`;\n")?;
+        StrUtil.append(mut s, "  }\n")?;
+        StrUtil.append(mut s, "  lines.push(JSON.stringify(rec));\n")?;
+        StrUtil.append(mut s, "}\n")?;
+        StrUtil.append(mut s, "fs.writeFileSync(casesPath, lines.join('\\n') + '\\n', 'utf8');\n")?;
+        return Ok(s);
+    }
+
+    fn writeDriver(pkgDir: StringView) -> Result<String, AppError> {
+        let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
+        FsUtil.ensureDir(workDir.view())?;
+        let driverPath = StrUtil.joinPath(workDir.view(), "driver.py")?;
+        let script = Harness.driverScript()?;
+        FsUtil.writeText(driverPath.view(), script.view())?;
+        return Ok(driverPath);
+    }
+
+    public fn build(pkgDir: StringView) -> Result<String, AppError> {
+        let manifestPath = StrUtil.joinPath(pkgDir, "ceesafe-anything.json")?;
+        let manifestText = FsUtil.readText(manifestPath.view())?;
+        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+            Some(n) => n,
+            null => StrUtil.cloneView("port")?,
+        };
+
+        let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
+        FsUtil.ensureDir(workDir.view())?;
+        let cDir = StrUtil.joinPath(workDir.view(), "c")?;
+        FsUtil.ensureDir(cDir.view())?;
+        let outDir = StrUtil.joinPath(pkgDir, "out")?;
+        FsUtil.ensureDir(outDir.view())?;
+
+        var emitArgs = Vector<StringView>.create();
+        match (emitArgs.push("-c")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (emitArgs.push("cd \"$1\" && exec ceesafec build --emit c -o \"$2\"")) {
+            Ok() => {}
+            Err(_) => { return Err(AppError.OutOfMemory); }
+        }
+        match (emitArgs.push("_")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (emitArgs.push(pkgDir)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (emitArgs.push(cDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+
+        let emitted = match (Process.capture("/bin/sh", emitArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        if (emitted.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+
+        var cFiles = Vector<String>.create();
+        Harness.collectCFiles(cDir.view(), mut cFiles)?;
+        if (cFiles.length == 0) {
+            return Err(AppError.NotFound);
+        }
+
+        var libFile = String.create();
+        StrUtil.append(mut libFile, "lib")?;
+        StrUtil.append(mut libFile, pkgName.view())?;
+        StrUtil.append(mut libFile, ".dylib")?;
+        let libPath = StrUtil.joinPath(outDir.view(), libFile.view())?;
+
+        var ccArgs = Vector<StringView>.create();
+        match (ccArgs.push("-shared")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-fPIC")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-O2")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-w")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-I")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push(cDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-o")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push(libPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        for (i in 0..cFiles.length) {
+            match (ccArgs.push(cFiles[i].view())) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+        }
+        match (ccArgs.push("-lm")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+
+        let linked = match (Process.capture("cc", ccArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        if (linked.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+        return Ok(libPath);
+    }
+
+    public fn record(pkgDir: StringView, inputsOpt: StringView?) -> Result<String, AppError> {
+        let manifestPath = StrUtil.joinPath(pkgDir, "ceesafe-anything.json")?;
+        let manifestText = FsUtil.readText(manifestPath.view())?;
+        let root = match (StrUtil.jsonStringField(manifestText.view(), "root")?) {
+            Some(r) => r,
+            null => { return Err(AppError.InvalidArg); },
+        };
+        let unit = match (StrUtil.jsonStringField(manifestText.view(), "unit")?) {
+            Some(u) => u,
+            null => { return Err(AppError.InvalidArg); },
+        };
+        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+            Some(n) => n,
+            null => StrUtil.cloneView("port")?,
+        };
+
+        let unitPath = StrUtil.joinPath(root.view(), unit.view())?;
+        let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
+        FsUtil.ensureDir(workDir.view())?;
+        let casesPath = StrUtil.joinPath(pkgDir, "cases.jsonl")?;
+
+        var defaultFn = String.create();
+        StrUtil.append(mut defaultFn, "port_")?;
+        StrUtil.append(mut defaultFn, pkgName.view())?;
+        StrUtil.append(mut defaultFn, "_run")?;
+
+        let lang = Harness.detectUnitLang(unit.view());
+        if (lang == "python") {
+            let pyScriptPath = StrUtil.joinPath(workDir.view(), "record_py.py")?;
+            let script = Harness.pyRecordScript()?;
+            FsUtil.writeText(pyScriptPath.view(), script.view())?;
+            var args = Vector<StringView>.create();
+            match (args.push(pyScriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (inputsOpt) {
+                Some(inp) => {
+                    match (args.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+                }
+                null => {}
+            }
+            let ran = match (Process.capture("python3", args, null)) {
+                Ok(out) => out,
+                Err(e) => { return Err(AppErrors.fromIo(e)); },
+            };
+            if (ran.status != 0) {
+                return Err(AppError.CommandFailed);
+            }
+            return Ok(casesPath);
+        }
+
+        if (lang == "ts") {
+            let jsScriptPath = StrUtil.joinPath(workDir.view(), "record_js.mjs")?;
+            let script = Harness.nodeRecordScript()?;
+            FsUtil.writeText(jsScriptPath.view(), script.view())?;
+            var args = Vector<StringView>.create();
+            match (args.push(jsScriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (inputsOpt) {
+                Some(inp) => {
+                    match (args.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+                }
+                null => {}
+            }
+            let ran = match (Process.capture("node", args, null)) {
+                Ok(out) => out,
+                Err(e) => { return Err(AppErrors.fromIo(e)); },
+            };
+            if (ran.status != 0) {
+                return Err(AppError.CommandFailed);
+            }
+            return Ok(casesPath);
+        }
+
+        // Default C source unit: compile to original.dylib and record via isolated ctypes
+        let origLib = StrUtil.joinPath(workDir.view(), "original.dylib")?;
+        var ccArgs = Vector<StringView>.create();
+        match (ccArgs.push("-shared")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-fPIC")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-O1")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-w")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-o")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push(origLib.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (ccArgs.push("-lm")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+
+        let built = match (Process.capture("cc", ccArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        if (built.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+
+        let driverPath = Harness.writeDriver(pkgDir)?;
+        var pyArgs = Vector<StringView>.create();
+        match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push("record")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(origLib.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (inputsOpt) {
+            Some(inp) => {
+                match (pyArgs.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            }
+            null => {}
+        }
+
+        let ran = match (Process.capture("python3", pyArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        if (ran.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+        return Ok(casesPath);
+    }
+
+    public fn diff(pkgDir: StringView) -> Result<bool, AppError> {
+        let casesPath = StrUtil.joinPath(pkgDir, "cases.jsonl")?;
+        if (!FsUtil.fileExists(casesPath.view())) {
+            return Err(AppError.NotFound);
+        }
+        let manifestPath = StrUtil.joinPath(pkgDir, "ceesafe-anything.json")?;
+        let manifestText = FsUtil.readText(manifestPath.view())?;
+        let pkgName = match (StrUtil.jsonStringField(manifestText.view(), "package_name")?) {
+            Some(n) => n,
+            null => StrUtil.cloneView("port")?,
+        };
+
+        var libFile = String.create();
+        StrUtil.append(mut libFile, "lib")?;
+        StrUtil.append(mut libFile, pkgName.view())?;
+        StrUtil.append(mut libFile, ".dylib")?;
+        let outDir = StrUtil.joinPath(pkgDir, "out")?;
+        let libPath = StrUtil.joinPath(outDir.view(), libFile.view())?;
+        if (!FsUtil.fileExists(libPath.view())) {
+            let _ = Harness.build(pkgDir)?;
+        }
+
+        let driverPath = Harness.writeDriver(pkgDir)?;
+        let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
+        let diffJson = StrUtil.joinPath(workDir.view(), "diff.json")?;
+        var defaultFn = String.create();
+        StrUtil.append(mut defaultFn, "port_")?;
+        StrUtil.append(mut defaultFn, pkgName.view())?;
+        StrUtil.append(mut defaultFn, "_run")?;
+
+        var pyArgs = Vector<StringView>.create();
+        match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push("diff")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(libPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(defaultFn.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(diffJson.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+
+        let ran = match (Process.capture("python3", pyArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        return Ok(ran.status == 0);
+    }
+}

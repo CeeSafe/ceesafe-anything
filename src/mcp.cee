@@ -1,0 +1,292 @@
+// `mcp`: newline-delimited JSON-RPC 2.0 MCP server over stdio.
+
+public struct Mcp {
+    fn jsonError(id: StringView, code: i64, msg: StringView) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, "{\"jsonrpc\":\"2.0\",\"id\":")?;
+        StrUtil.append(mut out, id)?;
+        StrUtil.append(mut out, ",\"error\":{\"code\":")?;
+        if (code < 0) {
+            StrUtil.append(mut out, "-")?;
+            StrUtil.appendNum(mut out, truncate<u64>(0 - code))?;
+        } else {
+            StrUtil.appendNum(mut out, truncate<u64>(code))?;
+        }
+        StrUtil.append(mut out, ",\"message\":\"")?;
+        StrUtil.appendJsonEscaped(mut out, msg)?;
+        StrUtil.append(mut out, "\"}}")?;
+        return Ok(out);
+    }
+
+    fn jsonToolText(id: StringView, text: StringView, isError: bool) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, "{\"jsonrpc\":\"2.0\",\"id\":")?;
+        StrUtil.append(mut out, id)?;
+        StrUtil.append(mut out, ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"")?;
+        StrUtil.appendJsonEscaped(mut out, text)?;
+        StrUtil.append(mut out, "\"}],\"isError\":")?;
+        StrUtil.append(mut out, if (isError) "true" else "false")?;
+        StrUtil.append(mut out, "}}")?;
+        return Ok(out);
+    }
+
+    fn extractId(line: StringView) -> Result<String, AppError> {
+        match (StrUtil.jsonStringField(line, "id")?) {
+            Some(s) => {
+                var q = String.create();
+                StrUtil.append(mut q, "\"")?;
+                StrUtil.appendJsonEscaped(mut q, s.view())?;
+                StrUtil.append(mut q, "\"")?;
+                return Ok(q);
+            }
+            null => {}
+        }
+        // Fallback numeric id extraction (`"id":1` or `"id": 1`)
+        let jb = line.bytes();
+        let needle = "\"id\":".bytes();
+        if (jb.length >= needle.length) {
+            let limit = jb.length - needle.length + 1;
+            for (i in 0..limit) {
+                var matched = true;
+                for (j in 0..needle.length) {
+                    if (jb[i + j] != needle[j]) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if (matched) {
+                    var k = i + needle.length;
+                    while (k < jb.length && jb[k] == 32) { k += 1; }
+                    let start = k;
+                    while (k < jb.length && jb[k] >= 48 && jb[k] <= 57) { k += 1; }
+                    if (k > start) {
+                        return StrUtil.cloneView(line[start..k]);
+                    }
+                }
+            }
+        }
+        return StrUtil.cloneView("null");
+    }
+
+    public fn handleLine(line: StringView) -> Result<String?, AppError> {
+        let trimmed = StrUtil.trim(line);
+        if (trimmed.bytes().length == 0) {
+            return Ok(null);
+        }
+        let method = match (StrUtil.jsonStringField(trimmed, "method")?) {
+            Some(m) => m,
+            null => { return Ok(null); },
+        };
+        if (method.view() == "notifications/initialized") {
+            return Ok(null);
+        }
+        let id = Mcp.extractId(trimmed)?;
+
+        if (method.view() == "initialize") {
+            var out = String.create();
+            StrUtil.append(mut out, "{\"jsonrpc\":\"2.0\",\"id\":")?;
+            StrUtil.append(mut out, id.view())?;
+            StrUtil.append(
+                mut out,
+                ",\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"ceesafe-anything\",\"version\":\"0.1.0\"}}}",
+            )?;
+            return Ok(Some(out));
+        }
+
+        if (method.view() == "ping") {
+            var out = String.create();
+            StrUtil.append(mut out, "{\"jsonrpc\":\"2.0\",\"id\":")?;
+            StrUtil.append(mut out, id.view())?;
+            StrUtil.append(mut out, ",\"result\":{}}")?;
+            return Ok(Some(out));
+        }
+
+        if (method.view() == "tools/list") {
+            var out = String.create();
+            StrUtil.append(mut out, "{\"jsonrpc\":\"2.0\",\"id\":")?;
+            StrUtil.append(mut out, id.view())?;
+            StrUtil.append(mut out, ",\"result\":{\"tools\":[")?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"analyze\",\"description\":\"Map a repository into CeeSafe porting units\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"root\":{\"type\":\"string\"}},\"required\":[\"root\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"bridge\",\"description\":\"Scaffold a pure CeeSafe C-ABI library package for one unit\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"root\":{\"type\":\"string\"},\"unit\":{\"type\":\"string\"},\"out\":{\"type\":\"string\"}},\"required\":[\"root\",\"unit\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"record\",\"description\":\"Record original C behavior into cases.jsonl\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"},\"inputs\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"build\",\"description\":\"Build a CeeSafe port package into a C-ABI shared library\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"diff\",\"description\":\"Replay cases.jsonl against the built CeeSafe shared library\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"gate\",\"description\":\"Run ceesafec fmt, check --deny-warnings, test, unsafe, stub, and build gates\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pkg\":{\"type\":\"string\"}},\"required\":[\"pkg\"]}},",
+            )?;
+            StrUtil.append(
+                mut out,
+                "{\"name\":\"lookup_library\",\"description\":\"Find the CeeSafe library equivalent for a source dependency\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"lang\":{\"type\":\"string\"},\"dep\":{\"type\":\"string\"}},\"required\":[\"lang\",\"dep\"]}}",
+            )?;
+            StrUtil.append(mut out, "]}}")?;
+            return Ok(Some(out));
+        }
+
+        if (method.view() == "tools/call") {
+            let name = match (StrUtil.jsonStringField(trimmed, "name")?) {
+                Some(n) => n,
+                null => { return Ok(Some(Mcp.jsonError(id.view(), -32602, "missing tool name")?)); },
+            };
+            if (name.view() == "analyze") {
+                match (StrUtil.jsonStringField(trimmed, "root")?) {
+                    Some(root) => {
+                        match (Analyze.run(root.view(), true)) {
+                            Ok(res) => { return Ok(Some(Mcp.jsonToolText(id.view(), res.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `root`", true)?)); }
+                }
+            }
+            if (name.view() == "bridge") {
+                let root = StrUtil.jsonStringField(trimmed, "root")?;
+                let unit = StrUtil.jsonStringField(trimmed, "unit")?;
+                let outOpt = StrUtil.jsonStringField(trimmed, "out")?;
+                match (root) {
+                    Some(r) => {
+                        match (unit) {
+                            Some(u) => {
+                                let outView: StringView? = match (borrow outOpt) {
+                                    Some(o) => Some(o.view()),
+                                    null => null,
+                                };
+                                match (Bridge.run(r.view(), u.view(), outView)) {
+                                    Ok(res) => { return Ok(Some(Mcp.jsonToolText(id.view(), res.view(), false)?)); }
+                                    Err(e) => {
+                                        return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?));
+                                    }
+                                }
+                            }
+                            null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `unit`", true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `root`", true)?)); }
+                }
+            }
+            if (name.view() == "record") {
+                let inputsOpt = StrUtil.jsonStringField(trimmed, "inputs")?;
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        let inpView: StringView? = match (borrow inputsOpt) {
+                            Some(v) => Some(v.view()),
+                            null => null,
+                        };
+                        match (Harness.record(pkg.view(), inpView)) {
+                            Ok(cases) => { return Ok(Some(Mcp.jsonToolText(id.view(), cases.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "build") {
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Harness.build(pkg.view())) {
+                            Ok(lib) => { return Ok(Some(Mcp.jsonToolText(id.view(), lib.view(), false)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "diff") {
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Harness.diff(pkg.view())) {
+                            Ok(true) => {
+                                return Ok(Some(Mcp.jsonToolText(id.view(), "all recorded cases matched", false)?));
+                            }
+                            Ok(false) => { return Ok(Some(Mcp.jsonToolText(id.view(), "mismatches found", true)?)); }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "gate") {
+                match (StrUtil.jsonStringField(trimmed, "pkg")?) {
+                    Some(pkg) => {
+                        match (Gate.run(pkg.view())) {
+                            Ok(passed) => {
+                                return Ok(
+                                    Some(
+                                        Mcp.jsonToolText(
+                                            id.view(),
+                                            if (passed) "gate passed" else "gate failed",
+                                            !passed,
+                                        )?,
+                                    ),
+                                );
+                            }
+                            Err(e) => { return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `pkg`", true)?)); }
+                }
+            }
+            if (name.view() == "lookup_library") {
+                let lang = StrUtil.jsonStringField(trimmed, "lang")?;
+                let dep = StrUtil.jsonStringField(trimmed, "dep")?;
+                match (lang) {
+                    Some(l) => {
+                        match (dep) {
+                            Some(d) => {
+                                match (LibraryMap.lookup(l.view(), d.view())) {
+                                    Ok(Some(entry)) => {
+                                        return Ok(Some(Mcp.jsonToolText(id.view(), entry.ceesafe.view(), false)?));
+                                    }
+                                    Ok(null) => {
+                                        return Ok(Some(Mcp.jsonToolText(id.view(), "no mapping found", false)?));
+                                    }
+                                    Err(e) => {
+                                        return Ok(Some(Mcp.jsonToolText(id.view(), AppErrors.describe(e), true)?));
+                                    }
+                                }
+                            }
+                            null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `dep`", true)?)); }
+                        }
+                    }
+                    null => { return Ok(Some(Mcp.jsonToolText(id.view(), "missing `lang`", true)?)); }
+                }
+            }
+            return Ok(Some(Mcp.jsonToolText(id.view(), "unknown tool", true)?));
+        }
+
+        return Ok(Some(Mcp.jsonError(id.view(), -32601, "unknown method")?));
+    }
+
+    public fn serve() -> i32 {
+        loop {
+            var line = String.create();
+            match (Console.readLine(mut line)) {
+                Ok(true) => {
+                    match (Mcp.handleLine(line.view())) {
+                        Ok(Some(reply)) => { Console.writeLine(reply.view()); }
+                        Ok(null) => {}
+                        Err(e) => { Console.writeError(AppErrors.describe(e)); }
+                    }
+                }
+                Ok(false) => { break; }
+                Err(_) => { return 1; }
+            }
+        }
+        return 0;
+    }
+}

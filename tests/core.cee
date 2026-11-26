@@ -1,0 +1,157 @@
+// Unit tests for ceesafe-anything core modules.
+
+fn fail(msg: StringView) -> TestFailure => TestFailure.create(msg);
+
+@test
+fn str_util_helpers() -> Result<void, TestFailure> {
+    if (!StrUtil.startsWith("ceesafe-anything", "ceesafe")) {
+        return Err(fail("startsWith failed"));
+    }
+    if (!StrUtil.endsWith("src/port.cee", ".cee")) {
+        return Err(fail("endsWith failed"));
+    }
+    if (!StrUtil.contains("panic(\"unimplemented: x\")", "unimplemented:")) {
+        return Err(fail("contains failed"));
+    }
+    if (StrUtil.trim("  hello \n ") != "hello") {
+        return Err(fail("trim failed"));
+    }
+    if (StrUtil.basename("a/b/slug.c") != "slug.c") {
+        return Err(fail("basename failed"));
+    }
+    if (StrUtil.stem("a/b/slug.c") != "slug") {
+        return Err(fail("stem failed"));
+    }
+    return Ok();
+}
+
+@test
+fn json_string_field_extraction() -> Result<void, TestFailure> {
+    let line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"root\":\"/tmp/repo\"}}";
+    match (StrUtil.jsonStringField(line, "method")) {
+        Ok(Some(m)) => {
+            if (m.view() != "initialize") {
+                return Err(fail("wrong method value"));
+            }
+        }
+        _ => { return Err(fail("missing method")); }
+    }
+    match (StrUtil.jsonStringField(line, "root")) {
+        Ok(Some(r)) => {
+            if (r.view() != "/tmp/repo") {
+                return Err(fail("wrong root value"));
+            }
+        }
+        _ => { return Err(fail("missing root")); }
+    }
+    return Ok();
+}
+
+@test
+fn library_map_finds_ceesafe_equivalents() -> Result<void, TestFailure> {
+    match (LibraryMap.lookup("c", "<zlib.h>")) {
+        Ok(Some(e)) => {
+            if (!StrUtil.contains(e.ceesafe.view(), "zlib")) {
+                return Err(fail("expected zlib mapping"));
+            }
+        }
+        _ => { return Err(fail("missing c <zlib.h> mapping")); }
+    }
+    match (LibraryMap.lookup("ts", "express")) {
+        Ok(Some(e)) => {
+            if (!StrUtil.contains(e.ceesafe.view(), "web_server")) {
+                return Err(fail("expected web_server mapping"));
+            }
+        }
+        _ => { return Err(fail("missing ts express mapping")); }
+    }
+    match (LibraryMap.lookup("python", "json")) {
+        Ok(Some(e)) => {
+            if (!StrUtil.contains(e.ceesafe.view(), "json")) {
+                return Err(fail("expected json mapping"));
+            }
+        }
+        _ => { return Err(fail("missing python json mapping")); }
+    }
+    return Ok();
+}
+
+@test
+fn gate_counts_stubs_and_unexplained_unsafe() -> Result<void, TestFailure> {
+    let stubSrc = "public fn a() -> i32 {\n    panic(\"unimplemented: a\");\n}\n// panic(\"unimplemented: comment\")\n";
+    if (Gate.countStubs(stubSrc) != 1) {
+        return Err(fail("expected 1 stub"));
+    }
+
+    let unsafeSrc = "// SAFETY: checked bounds\nlet s = unsafe { x };\nlet bad = unsafe { y };\n";
+    if (Gate.countUnexplainedUnsafe(unsafeSrc) != 1) {
+        return Err(fail("expected 1 unexplained unsafe"));
+    }
+    return Ok();
+}
+
+@test
+fn mcp_handles_initialize_and_tools_list() -> Result<void, TestFailure> {
+    let initReq = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}";
+    match (Mcp.handleLine(initReq)) {
+        Ok(Some(resp)) => {
+            if (!StrUtil.contains(resp.view(), "ceesafe-anything")) {
+                return Err(fail("initialize response missing server name"));
+            }
+        }
+        _ => { return Err(fail("initialize failed")); }
+    }
+    let listReq = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
+    match (Mcp.handleLine(listReq)) {
+        Ok(Some(resp)) => {
+            if (!StrUtil.contains(resp.view(), "\"analyze\"")
+                || !StrUtil.contains(resp.view(), "\"bridge\"")
+                || !StrUtil.contains(resp.view(), "\"record\"")
+                || !StrUtil.contains(resp.view(), "\"diff\"")) {
+                return Err(fail("tools/list missing expected tools"));
+            }
+        }
+        _ => { return Err(fail("tools/list failed")); }
+    }
+    return Ok();
+}
+
+@test
+fn harness_driver_script_has_record_and_diff() -> Result<void, TestFailure> {
+    match (Harness.driverScript()) {
+        Ok(script) => {
+            if (!StrUtil.contains(script.view(), "mode == 'record'")
+                || !StrUtil.contains(script.view(), "mode == 'diff'")
+                || !StrUtil.contains(script.view(), "os.fork()")) {
+                return Err(fail("driver script missing expected modes"));
+            }
+        }
+        Err(_) => { return Err(fail("failed to build driver script")); }
+    }
+    if (Harness.detectUnitLang("src/util.py") != "python") {
+        return Err(fail("expected python unit lang"));
+    }
+    if (Harness.detectUnitLang("src/util.ts") != "ts") {
+        return Err(fail("expected ts unit lang"));
+    }
+    if (Harness.detectUnitLang("src/util.c") != "c") {
+        return Err(fail("expected c unit lang"));
+    }
+    match (Harness.pyRecordScript()) {
+        Ok(py) => {
+            if (!StrUtil.contains(py.view(), "importlib.util")) {
+                return Err(fail("pyRecordScript missing importlib.util"));
+            }
+        }
+        Err(_) => { return Err(fail("failed to build pyRecordScript")); }
+    }
+    match (Harness.nodeRecordScript()) {
+        Ok(js) => {
+            if (!StrUtil.contains(js.view(), "pathToFileURL")) {
+                return Err(fail("nodeRecordScript missing pathToFileURL"));
+            }
+        }
+        Err(_) => { return Err(fail("failed to build nodeRecordScript")); }
+    }
+    return Ok();
+}

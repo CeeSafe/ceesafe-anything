@@ -1,7 +1,0 @@
-{
-    "name": "example/xml-util-facade",
-    "description": "Top-level functions over PEAR XML_Util 1.4.5",
-    "require": {
-        "php": ">=8.1"
-    }
-}

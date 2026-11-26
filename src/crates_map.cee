@@ -1,0 +1,194 @@
+// Source-language dependency -> CeeSafe library mapping (`lib/std`, `CeeSafeLibs`, `CeeSafe.Web`, `CeeSafe-index`).
+
+public struct LibraryEntry {
+    public source: String;
+    public ceesafe: String;
+    public fit: String;
+    public note: String;
+}
+
+public struct LibraryMap {
+    fn entry(
+        source: StringView,
+        ceesafe: StringView,
+        fit: StringView,
+        note: StringView,
+    ) -> Result<LibraryEntry?, AppError> {
+        let s = StrUtil.cloneView(source)?;
+        let c = StrUtil.cloneView(ceesafe)?;
+        let f = StrUtil.cloneView(fit)?;
+        let n = StrUtil.cloneView(note)?;
+        return Ok(Some(LibraryEntry { source: s, ceesafe: c, fit: f, note: n }));
+    }
+
+    public fn lookup(lang: StringView, dep: StringView) -> Result<LibraryEntry?, AppError> {
+        // C standard & system headers
+        if (lang == "c") {
+            if (dep == "<zlib.h>" || dep == "zlib") {
+                return LibraryMap.entry(dep, "zlib (CeeSafe-index)", "drop-in", "Pure CeeSafe DEFLATE/gzip/zlib codec");
+            }
+            if (dep == "<openssl/ssl.h>" || dep == "<openssl/tls.h>" || dep == "openssl") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafeLibs/tls + CeeSafeLibs/pkey",
+                    "direct",
+                    "TLS 1.3 + X.509/PEM/pkey in CeeSafeLibs",
+                );
+            }
+            if (dep == "<openssl/sha.h>") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafeLibs/sha256 + sha512",
+                    "drop-in",
+                    "Pure CeeSafe SHA-256 and SHA-512",
+                );
+            }
+            if (dep == "<cjson/cJSON.h>" || dep == "<jansson.h>") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/json", "drop-in", "Zero-panic JSON parser and serializer");
+            }
+            if (dep == "<nghttp3/nghttp3.h>") {
+                return LibraryMap.entry(dep, "CeeSafe.Web/web_http3", "direct", "HTTP/3 over QUIC in CeeSafe.Web");
+            }
+            if (dep == "<ngtcp2/ngtcp2.h>") {
+                return LibraryMap.entry(dep, "CeeSafe.Web/web_quic", "direct", "QUIC transport in CeeSafe.Web");
+            }
+            if (dep == "<stdlib.h>" || dep == "<string.h>" || dep == "<stdio.h>" || dep == "<stdint.h>") {
+                return LibraryMap.entry(
+                    dep,
+                    "lib/std",
+                    "drop-in",
+                    "CeeSafe standard library (Vector, String, File, Console)",
+                );
+            }
+        }
+
+        // TypeScript / JavaScript
+        if (lang == "ts") {
+            if (dep == "express" || dep == "fastify" || dep == "koa" || dep == "hono") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafe.Web/web_server",
+                    "direct",
+                    "HTTP/1.1, HTTP/2, HTTP/3 router and server with spawnIsolated",
+                );
+            }
+            if (dep == "axios" || dep == "node-fetch" || dep == "undici" || dep == "got") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafe.Web/web_client",
+                    "direct",
+                    "Async HTTP/1.1 + HTTP/2 client with connection pooling and TLS",
+                );
+            }
+            if (dep == "ws" || dep == "socket.io") {
+                return LibraryMap.entry(dep, "CeeSafe.Web/web_ws", "direct", "RFC 6455 WebSocket server and client");
+            }
+            if (dep == "http-proxy" || dep == "http-proxy-middleware") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafe.Web/web_proxy",
+                    "direct",
+                    "Reverse proxy with streaming and header forwarding",
+                );
+            }
+            if (dep == "serve-static") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafe.Web/web_static",
+                    "drop-in",
+                    "Static file server with Range, ETag, and sendfile",
+                );
+            }
+            if (dep == "bcrypt" || dep == "bcryptjs") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/bcrypt", "drop-in", "Password hashing in CeeSafeLibs");
+            }
+            if (dep == "pako" || dep == "fflate" || dep == "zlib") {
+                return LibraryMap.entry(dep, "zlib (CeeSafe-index)", "drop-in", "DEFLATE/gzip/zlib compression");
+            }
+            if (dep == "qrcode") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/qrcode", "drop-in", "QR code encoder");
+            }
+        }
+
+        // Python
+        if (lang == "python") {
+            if (dep == "json" || dep == "orjson" || dep == "ujson") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/json", "drop-in", "JSON parser and serializer");
+            }
+            if (dep == "requests" || dep == "httpx" || dep == "aiohttp" || dep == "urllib3") {
+                return LibraryMap.entry(dep, "CeeSafe.Web/web_client", "direct", "HTTP/1.1 + HTTP/2 client");
+            }
+            if (dep == "fastapi" || dep == "flask" || dep == "starlette" || dep == "uvicorn") {
+                return LibraryMap.entry(dep, "CeeSafe.Web/web_server", "direct", "Async HTTP server and router");
+            }
+            if (dep == "websockets") {
+                return LibraryMap.entry(dep, "CeeSafe.Web/web_ws", "direct", "WebSocket protocol implementation");
+            }
+            if (dep == "zlib" || dep == "gzip") {
+                return LibraryMap.entry(dep, "zlib (CeeSafe-index)", "drop-in", "DEFLATE/gzip/zlib codec");
+            }
+            if (dep == "hashlib") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/sha256 + sha512", "direct", "SHA-256 and SHA-512 digests");
+            }
+            if (dep == "bcrypt") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/bcrypt", "drop-in", "bcrypt password hashing");
+            }
+            if (dep == "base64") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/encoding", "drop-in", "Base64 and hex encoding");
+            }
+        }
+
+        // Go
+        if (lang == "go") {
+            if (dep == "net/http" || dep == "github.com/gin-gonic/gin" || dep == "github.com/go-chi/chi") {
+                return LibraryMap.entry(
+                    dep,
+                    "CeeSafe.Web/web_server + web_client",
+                    "direct",
+                    "HTTP/1.1, HTTP/2, HTTP/3 server and client",
+                );
+            }
+            if (dep == "encoding/json") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/json", "drop-in", "JSON parser and serializer");
+            }
+            if (dep == "compress/gzip" || dep == "compress/zlib" || dep == "compress/flate") {
+                return LibraryMap.entry(dep, "zlib (CeeSafe-index)", "drop-in", "DEFLATE/gzip/zlib compression");
+            }
+            if (dep == "crypto/tls") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/tls", "direct", "TLS 1.3 client and server");
+            }
+            if (dep == "crypto/sha256" || dep == "crypto/sha512") {
+                return LibraryMap.entry(dep, "CeeSafeLibs/sha256 + sha512", "drop-in", "SHA-256 and SHA-512");
+            }
+        }
+
+        return Ok(null);
+    }
+
+    public fn runCli(lang: StringView, dep: StringView) -> i32 {
+        match (LibraryMap.lookup(lang, dep)) {
+            Ok(Some(entry)) => {
+                Console.write("source:  ");
+                Console.writeLine(entry.source.view());
+                Console.write("ceesafe: ");
+                Console.writeLine(entry.ceesafe.view());
+                Console.write("fit:     ");
+                Console.writeLine(entry.fit.view());
+                Console.write("note:    ");
+                Console.writeLine(entry.note.view());
+                return 0;
+            }
+            Ok(null) => {
+                Console.write("no built-in CeeSafe library mapping for ");
+                Console.write(lang);
+                Console.write(":");
+                Console.writeLine(dep);
+                return 1;
+            }
+            Err(e) => {
+                Console.writeError(AppErrors.describe(e));
+                return 1;
+            }
+        }
+    }
+}

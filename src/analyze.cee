@@ -1,0 +1,190 @@
+// `analyze`: walk a repository, detect source languages, count LOC, and scan porting risks.
+
+public struct FileSummary {
+    public path: String;
+    public lang: String;
+    public lines: u64;
+    public risks: u64;
+}
+
+public struct Analyze {
+    fn shouldSkipDir(name: StringView) -> bool {
+        return name == ".git" || name == "node_modules" || name == "target" || name == "build" ||
+            name == "dist" || name == "out" || name == "vendor" || name == ".ceesafe-anything" ||
+            name == ".rust-anything" || name == "ceesafe";
+    }
+
+    public fn detectLang(name: StringView) -> StringView? {
+        if (StrUtil.endsWith(name, ".c") || StrUtil.endsWith(name, ".h")) {
+            return Some("c");
+        }
+        if (StrUtil.endsWith(name, ".ts") || StrUtil.endsWith(name, ".tsx") ||
+            StrUtil.endsWith(name, ".js") || StrUtil.endsWith(name, ".mjs")) {
+            return Some("ts");
+        }
+        if (StrUtil.endsWith(name, ".py")) {
+            return Some("python");
+        }
+        if (StrUtil.endsWith(name, ".go")) {
+            return Some("go");
+        }
+        if (StrUtil.endsWith(name, ".rb")) {
+            return Some("ruby");
+        }
+        if (StrUtil.endsWith(name, ".java")) {
+            return Some("java");
+        }
+        if (StrUtil.endsWith(name, ".kt")) {
+            return Some("kotlin");
+        }
+        if (StrUtil.endsWith(name, ".php")) {
+            return Some("php");
+        }
+        if (StrUtil.endsWith(name, ".cs")) {
+            return Some("csharp");
+        }
+        return null;
+    }
+
+    fn countLinesAndRisks(text: StringView, lang: StringView) -> u64 {
+        var lines: u64 = 0;
+        let b = text.bytes();
+        var start: usize = 0;
+        for (i in 0..b.length) {
+            if (b[i] == 10) {
+                let line = StrUtil.trim(text[start..i]);
+                if (line.bytes().length > 0 && !StrUtil.startsWith(line, "//") && !StrUtil.startsWith(line, "#")) {
+                    lines += 1;
+                }
+                start = i + 1;
+            }
+        }
+        if (start < b.length) {
+            let line = StrUtil.trim(text[start..b.length]);
+            if (line.bytes().length > 0) {
+                lines += 1;
+            }
+        }
+        let _ = lang;
+        return lines;
+    }
+
+    fn countRisks(text: StringView) -> u64 {
+        var risks: u64 = 0;
+        if (StrUtil.contains(text, "malloc(") || StrUtil.contains(text, "free(")) {
+            risks += 1;
+        }
+        if (StrUtil.contains(text, "setjmp(") || StrUtil.contains(text, "longjmp(")) {
+            risks += 1;
+        }
+        if (StrUtil.contains(text, "eval(") || StrUtil.contains(text, "Function(")) {
+            risks += 1;
+        }
+        if (StrUtil.contains(text, "unsafe")) {
+            risks += 1;
+        }
+        return risks;
+    }
+
+    fn walkDir(
+        root: StringView,
+        rel: StringView,
+        depth: usize,
+        out: borrow mut Vector<FileSummary>,
+    ) -> Result<void, AppError> {
+        if (depth > 8) {
+            return Ok();
+        }
+        let dirPath = if (rel.bytes().length == 0) {
+            StrUtil.cloneView(root)?
+        } else {
+            StrUtil.joinPath(root, rel)?
+        };
+        let entries = match (Directory.list(dirPath.view())) {
+            Ok(list) => list,
+            Err(_) => { return Ok(); },
+        };
+        for (i in 0..entries.length) {
+            let name = entries[i].view();
+            if (Analyze.shouldSkipDir(name)) {
+                continue;
+            }
+            let childRel = if (rel.bytes().length == 0) {
+                StrUtil.cloneView(name)?
+            } else {
+                StrUtil.joinPath(rel, name)?
+            };
+            let childFull = StrUtil.joinPath(root, childRel.view())?;
+            match (Analyze.detectLang(name)) {
+                Some(lang) => {
+                    match (FsUtil.readText(childFull.view())) {
+                        Ok(text) => {
+                            let lines = Analyze.countLinesAndRisks(text.view(), lang);
+                            let risks = Analyze.countRisks(text.view());
+                            let langOwned = StrUtil.cloneView(lang)?;
+                            match (out.push(FileSummary {
+                                path: childRel,
+                                lang: langOwned,
+                                lines: lines,
+                                risks: risks,
+                            })) {
+                                Ok() => {}
+                                Err(_) => { return Err(AppError.OutOfMemory); }
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                null => {
+                    Analyze.walkDir(root, childRel.view(), depth + 1, mut out)?;
+                }
+            }
+        }
+        return Ok();
+    }
+
+    public fn run(root: StringView, jsonMode: bool) -> Result<String, AppError> {
+        var files = Vector<FileSummary>.create();
+        Analyze.walkDir(root, "", 0, mut files)?;
+        var out = String.create();
+        if (jsonMode) {
+            StrUtil.append(mut out, "{\"root\":\"")?;
+            StrUtil.appendJsonEscaped(mut out, root)?;
+            StrUtil.append(mut out, "\",\"units\":[")?;
+            for (i in 0..files.length) {
+                if (i > 0) {
+                    StrUtil.append(mut out, ",")?;
+                }
+                StrUtil.append(mut out, "{\"path\":\"")?;
+                StrUtil.appendJsonEscaped(mut out, files[i].path.view())?;
+                StrUtil.append(mut out, "\",\"lang\":\"")?;
+                StrUtil.append(mut out, files[i].lang.view())?;
+                StrUtil.append(mut out, "\",\"lines\":")?;
+                StrUtil.appendNum(mut out, files[i].lines)?;
+                StrUtil.append(mut out, ",\"risks\":")?;
+                StrUtil.appendNum(mut out, files[i].risks)?;
+                StrUtil.append(mut out, "}")?;
+            }
+            StrUtil.append(mut out, "]}")?;
+            return Ok(out);
+        }
+        StrUtil.append(mut out, "Repository: ")?;
+        StrUtil.append(mut out, root)?;
+        StrUtil.append(mut out, "\nUnits found: ")?;
+        StrUtil.appendNum(mut out, files.length as u64)?;
+        StrUtil.append(mut out, "\n\n")?;
+        for (i in 0..files.length) {
+            StrUtil.append(mut out, "  ")?;
+            StrUtil.append(mut out, files[i].lang.view())?;
+            StrUtil.append(mut out, "\t")?;
+            StrUtil.appendNum(mut out, files[i].lines)?;
+            StrUtil.append(mut out, " loc\t")?;
+            StrUtil.appendNum(mut out, files[i].risks)?;
+            StrUtil.append(mut out, " risk(s)\t")?;
+            StrUtil.append(mut out, files[i].path.view())?;
+            StrUtil.append(mut out, "\n")?;
+        }
+        StrUtil.append(mut out, "\nNext: ceesafe-anything bridge <root> <unit>\n")?;
+        return Ok(out);
+    }
+}

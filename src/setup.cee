@@ -1,0 +1,34 @@
+// `setup`: print or install MCP server configuration for coding agents (Claude, Codex, Cursor, Gemini, OpenCode).
+
+public struct Setup {
+    public fn run(agent: StringView) -> i32 {
+        let exe = match (Process.argument(0)) {
+            Some(p) => p,
+            null => "ceesafe-anything",
+        };
+        Console.writeLine("# ceesafe-anything MCP server configuration");
+        if (agent == "codex") {
+            Console.writeLine("");
+            Console.writeLine("[mcp_servers.ceesafe-anything]");
+            Console.write("command = \"");
+            Console.write(exe);
+            Console.writeLine("\"");
+            Console.writeLine("args = [\"mcp\"]");
+            return 0;
+        }
+        Console.writeLine("");
+        Console.writeLine("{");
+        Console.writeLine("  \"mcpServers\": {");
+        Console.writeLine("    \"ceesafe-anything\": {");
+        Console.write("      \"command\": \"");
+        Console.write(exe);
+        Console.writeLine("\",");
+        Console.writeLine("      \"args\": [\"mcp\"]");
+        Console.writeLine("    }");
+        Console.writeLine("  }");
+        Console.writeLine("}");
+        Console.writeLine("");
+        Console.writeLine("Copy skills/ceesafe-anything/{SKILL.md,whole-app.md} into your agent's skills directory.");
+        return 0;
+    }
+}

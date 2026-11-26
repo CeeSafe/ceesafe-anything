@@ -1,7 +1,0 @@
-target/
-.rust-anything/
-ruby/*.so
-ruby/*.bundle
-cs/*.so
-cs/*.dylib
-cs/*.dll

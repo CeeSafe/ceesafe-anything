@@ -1,4 +1,7 @@
+out/
 target/
+.ceesafe-anything/
+.rust-anything/
 __pycache__/
 *.pyc
 
@@ -7,3 +10,4 @@ website/dist/
 website/.void/
 website/.cloudflare/
 website/.wrangler/
+.DS_Store

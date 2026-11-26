@@ -1,0 +1,315 @@
+// Shared error types, string/path helpers, file I/O, and lightweight JSON utilities.
+
+public enum AppError {
+    OutOfMemory,
+    InvalidArg,
+    NotFound,
+    AlreadyExists,
+    CommandFailed,
+    Io(IoError),
+}
+
+public struct AppErrors {
+    public fn fromAlloc(e: AllocError) -> AppError => AppError.OutOfMemory;
+
+    public fn fromIo(e: IoError) -> AppError => match (e) {
+        IoError.NotFound => AppError.NotFound,
+        IoError.AlreadyExists => AppError.AlreadyExists,
+        IoError.OutOfMemory => AppError.OutOfMemory,
+        _ => AppError.Io(e),
+    };
+
+    public fn describe(e: borrow AppError) -> StringView => match (e) {
+        AppError.OutOfMemory => "out of memory",
+        AppError.InvalidArg => "invalid argument",
+        AppError.NotFound => "file or directory not found",
+        AppError.AlreadyExists => "target already exists",
+        AppError.CommandFailed => "command failed",
+        AppError.Io(io) => io.message(),
+    };
+}
+
+public struct StrUtil {
+    public fn cloneView(s: StringView) -> Result<String, AppError> {
+        var out = String.create();
+        match (out.append(s)) {
+            Ok() => { return Ok(out); }
+            Err(_) => { return Err(AppError.OutOfMemory); }
+        }
+    }
+
+    public fn append(dst: borrow mut String, part: StringView) -> Result<void, AppError> {
+        match (dst.append(part)) {
+            Ok() => { return Ok(); }
+            Err(_) => { return Err(AppError.OutOfMemory); }
+        }
+    }
+
+    public fn appendNum(dst: borrow mut String, n: u64) -> Result<void, AppError> {
+        match (dst.appendNumber(n)) {
+            Ok() => { return Ok(); }
+            Err(_) => { return Err(AppError.OutOfMemory); }
+        }
+    }
+
+    public fn joinPath(a: StringView, b: StringView) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, a)?;
+        if (a.bytes().length > 0 && a.bytes()[a.bytes().length - 1] != 47) {
+            StrUtil.append(mut out, "/")?;
+        }
+        StrUtil.append(mut out, b)?;
+        return Ok(out);
+    }
+
+    public fn startsWith(haystack: StringView, prefix: StringView) -> bool {
+        let h = haystack.bytes();
+        let p = prefix.bytes();
+        if (p.length > h.length) {
+            return false;
+        }
+        for (i in 0..p.length) {
+            if (h[i] != p[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public fn endsWith(haystack: StringView, suffix: StringView) -> bool {
+        let h = haystack.bytes();
+        let s = suffix.bytes();
+        if (s.length > h.length) {
+            return false;
+        }
+        let off = h.length - s.length;
+        for (i in 0..s.length) {
+            if (h[off + i] != s[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public fn contains(haystack: StringView, needle: StringView) -> bool {
+        let h = haystack.bytes();
+        let n = needle.bytes();
+        if (n.length == 0) {
+            return true;
+        }
+        if (n.length > h.length) {
+            return false;
+        }
+        let limit = h.length - n.length + 1;
+        for (i in 0..limit) {
+            var matched = true;
+            for (j in 0..n.length) {
+                if (h[i + j] != n[j]) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public fn trim(s: StringView) -> StringView {
+        let b = s.bytes();
+        var lo: usize = 0;
+        var hi: usize = b.length;
+        while (lo < hi && (b[lo] == 32 || b[lo] == 9 || b[lo] == 10 || b[lo] == 13)) {
+            lo += 1;
+        }
+        while (hi > lo && (b[hi - 1] == 32 || b[hi - 1] == 9 || b[hi - 1] == 10 || b[hi - 1] == 13)) {
+            hi -= 1;
+        }
+        return s[lo..hi];
+    }
+
+    public fn basename(path: StringView) -> StringView {
+        let b = path.bytes();
+        var hi: usize = b.length;
+        while (hi > 0 && b[hi - 1] == 47) {
+            hi -= 1;
+        }
+        var lo: usize = hi;
+        while (lo > 0 && b[lo - 1] != 47) {
+            lo -= 1;
+        }
+        return path[lo..hi];
+    }
+
+    public fn stem(name: StringView) -> StringView {
+        let base = StrUtil.basename(name);
+        let b = base.bytes();
+        var dot: usize = b.length;
+        for (i in 0..b.length) {
+            if (b[i] == 46) {
+                dot = i;
+                break;
+            }
+        }
+        return base[0..dot];
+    }
+
+    public fn sanitizeIdent(name: StringView) -> Result<String, AppError> {
+        var out = String.create();
+        let b = name.bytes();
+        for (i in 0..b.length) {
+            let c = b[i];
+            let isLower = c >= 97 && c <= 122;
+            let isUpper = c >= 65 && c <= 90;
+            let isDigit = c >= 48 && c <= 57;
+            if (isLower || isDigit || c == 95) {
+                let slice = name[i..i + 1];
+                StrUtil.append(mut out, slice)?;
+            } else if (isUpper) {
+                let lower = [c + 32];
+                match (StringView.fromUtf8(lower[..])) {
+                    Some(ch) => { StrUtil.append(mut out, ch)?; }
+                    null => {}
+                }
+            } else {
+                StrUtil.append(mut out, "_")?;
+            }
+        }
+        if (out.view().bytes().length == 0) {
+            StrUtil.append(mut out, "unit")?;
+        }
+        return Ok(out);
+    }
+
+    /// Escapes a string for JSON double-quoted output.
+    public fn appendJsonEscaped(dst: borrow mut String, text: StringView) -> Result<void, AppError> {
+        let b = text.bytes();
+        for (i in 0..b.length) {
+            let c = b[i];
+            if (c == 34) {
+                StrUtil.append(mut dst, "\\\"")?;
+            } else if (c == 92) {
+                StrUtil.append(mut dst, "\\\\")?;
+            } else if (c == 10) {
+                StrUtil.append(mut dst, "\\n")?;
+            } else if (c == 13) {
+                StrUtil.append(mut dst, "\\r")?;
+            } else if (c == 9) {
+                StrUtil.append(mut dst, "\\t")?;
+            } else if (c >= 32) {
+                StrUtil.append(mut dst, text[i..i + 1])?;
+            }
+        }
+        return Ok();
+    }
+
+    /// Extracts a simple `"key": "value"` string field from a JSON line.
+    public fn jsonStringField(json: StringView, key: StringView) -> Result<String?, AppError> {
+        var needle = String.create();
+        StrUtil.append(mut needle, "\"")?;
+        StrUtil.append(mut needle, key)?;
+        StrUtil.append(mut needle, "\"")?;
+        let jb = json.bytes();
+        let nb = needle.view().bytes();
+        if (nb.length > jb.length) {
+            return Ok(null);
+        }
+        let limit = jb.length - nb.length + 1;
+        for (i in 0..limit) {
+            var matched = true;
+            for (j in 0..nb.length) {
+                if (jb[i + j] != nb[j]) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (!matched) {
+                continue;
+            }
+            var k = i + nb.length;
+            while (k < jb.length && (jb[k] == 32 || jb[k] == 9 || jb[k] == 58)) {
+                k += 1;
+            }
+            if (k >= jb.length || jb[k] != 34) {
+                continue;
+            }
+            k += 1;
+            var out = String.create();
+            while (k < jb.length && jb[k] != 34) {
+                if (jb[k] == 92 && k + 1 < jb.length) {
+                    k += 1;
+                    let esc = jb[k];
+                    if (esc == 110) {
+                        StrUtil.append(mut out, "\n")?;
+                    } else if (esc == 116) {
+                        StrUtil.append(mut out, "\t")?;
+                    } else if (esc == 114) {
+                        StrUtil.append(mut out, "\r")?;
+                    } else {
+                        StrUtil.append(mut out, json[k..k + 1])?;
+                    }
+                } else {
+                    StrUtil.append(mut out, json[k..k + 1])?;
+                }
+                k += 1;
+            }
+            return Ok(Some(out));
+        }
+        return Ok(null);
+    }
+}
+
+public struct FsUtil {
+    public fn readText(path: StringView) -> Result<String, AppError> {
+        var file = match (File.open(path)) {
+            Ok(f) => f,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        var bytes = Vector<u8>.create();
+        var chunk = [0u8; 4096];
+        loop {
+            let n = match (file.read(mut chunk[..])) {
+                Ok(n) => n,
+                Err(e) => { return Err(AppErrors.fromIo(e)); },
+            };
+            if (n == 0) {
+                break;
+            }
+            match (bytes.extend(chunk[0..n])) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+        }
+        match (StringView.fromUtf8(bytes.view())) {
+            Some(view) => { return StrUtil.cloneView(view); }
+            null => { return Err(AppError.InvalidArg); }
+        }
+    }
+
+    public fn writeText(path: StringView, content: StringView) -> Result<void, AppError> {
+        var file = match (File.create(path)) {
+            Ok(f) => f,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        match (file.write(content.bytes())) {
+            Ok() => { return Ok(); }
+            Err(e) => { return Err(AppErrors.fromIo(e)); }
+        }
+    }
+
+    public fn fileExists(path: StringView) -> bool {
+        match (File.open(path)) {
+            Ok(_) => { return true; }
+            Err(_) => { return false; }
+        }
+    }
+
+    public fn ensureDir(path: StringView) -> Result<void, AppError> {
+        match (Directory.create(path)) {
+            Ok() => { return Ok(); }
+            Err(IoError.AlreadyExists) => { return Ok(); }
+            Err(e) => { return Err(AppErrors.fromIo(e)); }
+        }
+    }
+}

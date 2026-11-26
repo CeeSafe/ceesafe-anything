@@ -1,0 +1,84 @@
+// `doctor`: verify that `ceesafec`, `cc`, and optional source-language runtimes are installed.
+
+public struct Doctor {
+    fn probe(program: StringView, flag: StringView) -> bool {
+        var args = Vector<StringView>.create();
+        match (args.push(flag)) {
+            Ok() => {}
+            Err(_) => { return false; }
+        }
+        match (Process.capture(program, args, null)) {
+            Ok(out) => { return out.status == 0; }
+            Err(_) => { return false; }
+        }
+    }
+
+    fn checkTool(
+        name: StringView,
+        program: StringView,
+        flag: StringView,
+        required: bool,
+        fix: StringView,
+    ) -> bool {
+        let ok = Doctor.probe(program, flag);
+        if (ok) {
+            Console.write("ok       ");
+            Console.writeLine(name);
+            return true;
+        }
+        Console.write("missing  ");
+        Console.write(name);
+        if (!required) {
+            Console.write(" (optional)");
+        }
+        Console.writeLine("");
+        Console.write("         fix: ");
+        Console.writeLine(fix);
+        return !required;
+    }
+
+    public fn run() -> i32 {
+        var ok = true;
+        if (!Doctor.checkTool(
+            "ceesafec",
+            "ceesafec",
+            "--version",
+            true,
+            "install ceesafec from the CeeSafe repository and add it to PATH",
+        )) {
+            ok = false;
+        }
+        if (!Doctor.checkTool(
+            "cc",
+            "cc",
+            "--version",
+            true,
+            "install a C compiler (xcode-select --install on macOS, build-essential on Linux)",
+        )) {
+            ok = false;
+        }
+        let _ = Doctor.checkTool(
+            "python3",
+            "python3",
+            "--version",
+            false,
+            "brew install python@3.13 (optional: needed for Python ports and C ctypes diffing)",
+        );
+        let _ = Doctor.checkTool(
+            "node",
+            "node",
+            "--version",
+            false,
+            "brew install node@24 (optional: needed for TS/JS ports)",
+        );
+        let _ = Doctor.checkTool("go", "go", "version", false, "brew install go (optional: needed for Go ports)");
+
+        Console.writeLine("");
+        if (ok) {
+            Console.writeLine("Everything required is in place. Source language runtimes are optional.");
+            return 0;
+        }
+        Console.writeLine("Something required is missing (ceesafec or cc). Run the fix commands above.");
+        return 1;
+    }
+}
