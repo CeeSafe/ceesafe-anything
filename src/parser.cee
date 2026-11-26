@@ -1,4 +1,4 @@
-// Lightweight multi-language exported-function parser for C, Python, TypeScript/JavaScript, and Go.
+// Lightweight multi-language exported-function & C struct/enum parser for C, Python, TS/JS, and Go.
 
 public struct ParamSpec {
     public name: String;
@@ -10,6 +10,16 @@ public struct FnSpec {
     public name: String;
     public returnType: String;
     public params: Vector<ParamSpec>;
+}
+
+public struct StructSpec {
+    public name: String;
+    public fields: Vector<ParamSpec>;
+}
+
+public struct EnumSpec {
+    public name: String;
+    public variants: Vector<String>;
 }
 
 public struct Parser {
@@ -31,6 +41,113 @@ public struct Parser {
         return null;
     }
 
+    fn stripSemicolon(s: StringView) -> StringView {
+        let t = StrUtil.trim(s);
+        let b = t.bytes();
+        if (b.length > 0 && b[b.length - 1] == 59) {
+            return StrUtil.trim(t[0..b.length - 1]);
+        }
+        return t;
+    }
+
+    public fn extractCStructs(source: StringView) -> Result<Vector<StructSpec>, AppError> {
+        var out = Vector<StructSpec>.create();
+        let b = source.bytes();
+        var start: usize = 0;
+        var inStruct = false;
+        var fields = Vector<ParamSpec>.create();
+        while (start < b.length) {
+            var end = start;
+            while (end < b.length && b[end] != 10) {
+                end += 1;
+            }
+            let line = StrUtil.trim(source[start..end]);
+            if (!inStruct) {
+                if (StrUtil.startsWith(line, "typedef struct") && StrUtil.contains(line, "{")) {
+                    inStruct = true;
+                    fields = Vector<ParamSpec>.create();
+                }
+            } else if (StrUtil.startsWith(line, "}")) {
+                let tail = Parser.stripSemicolon(line[1..line.bytes().length]);
+                if (tail.bytes().length > 0 && fields.length > 0) {
+                    match (out.push(StructSpec { name: StrUtil.cloneView(tail)?, fields: fields })) {
+                        Ok() => {}
+                        Err(_) => { return Err(AppError.OutOfMemory); }
+                    }
+                    fields = Vector<ParamSpec>.create();
+                }
+                inStruct = false;
+            } else if (StrUtil.contains(line, ";") && !StrUtil.startsWith(line, "//")) {
+                let clean = Parser.stripSemicolon(line);
+                let cb = clean.bytes();
+                var nameStart = cb.length;
+                while (nameStart > 0 && Parser.isIdentChar(cb[nameStart - 1])) {
+                    nameStart -= 1;
+                }
+                if (nameStart > 0 && nameStart < cb.length) {
+                    let fName = clean[nameStart..cb.length];
+                    let fTy = StrUtil.trim(clean[0..nameStart]);
+                    let abi = Parser.mapCType(fTy);
+                    match (fields.push(ParamSpec {
+                        name: StrUtil.cloneView(fName)?,
+                        ceeType: StrUtil.cloneView(Parser.ceeTypeForAbi(abi))?,
+                        abiKind: StrUtil.cloneView(abi)?,
+                    })) {
+                        Ok() => {}
+                        Err(_) => { return Err(AppError.OutOfMemory); }
+                    }
+                }
+            }
+            start = end + 1;
+        }
+        return Ok(out);
+    }
+
+    public fn extractCEnums(source: StringView) -> Result<Vector<EnumSpec>, AppError> {
+        var out = Vector<EnumSpec>.create();
+        let b = source.bytes();
+        var start: usize = 0;
+        var inEnum = false;
+        var variants = Vector<String>.create();
+        while (start < b.length) {
+            var end = start;
+            while (end < b.length && b[end] != 10) {
+                end += 1;
+            }
+            let line = StrUtil.trim(source[start..end]);
+            if (!inEnum) {
+                if (StrUtil.startsWith(line, "typedef enum") && StrUtil.contains(line, "{")) {
+                    inEnum = true;
+                    variants = Vector<String>.create();
+                }
+            } else if (StrUtil.startsWith(line, "}")) {
+                let tail = Parser.stripSemicolon(line[1..line.bytes().length]);
+                if (tail.bytes().length > 0 && variants.length > 0) {
+                    match (out.push(EnumSpec { name: StrUtil.cloneView(tail)?, variants: variants })) {
+                        Ok() => {}
+                        Err(_) => { return Err(AppError.OutOfMemory); }
+                    }
+                    variants = Vector<String>.create();
+                }
+                inEnum = false;
+            } else if (line.bytes().length > 0 && !StrUtil.startsWith(line, "//")) {
+                let lb = line.bytes();
+                var k: usize = 0;
+                while (k < lb.length && Parser.isIdentChar(lb[k])) {
+                    k += 1;
+                }
+                if (k > 0) {
+                    match (variants.push(StrUtil.cloneView(line[0..k])?)) {
+                        Ok() => {}
+                        Err(_) => { return Err(AppError.OutOfMemory); }
+                    }
+                }
+            }
+            start = end + 1;
+        }
+        return Ok(out);
+    }
+
     fn mapCType(raw: StringView) -> StringView {
         let t = StrUtil.trim(raw);
         if (StrUtil.contains(t, "*")) {
@@ -42,58 +159,26 @@ public struct Parser {
             }
             return "buffer";
         }
-        if (t == "void") {
-            return "void";
-        }
-        if (t == "bool" || t == "_Bool") {
-            return "bool";
-        }
-        if (t == "double" || t == "float") {
-            return "f64";
-        }
-        if (t == "size_t" || t == "uintptr_t") {
-            return "usize";
-        }
-        if (t == "uint64_t" || t == "unsigned long" || t == "unsigned long long") {
-            return "u64";
-        }
-        if (t == "int64_t" || t == "long" || t == "long long") {
-            return "i64";
-        }
-        if (t == "uint32_t" || t == "unsigned" || t == "unsigned int") {
-            return "u32";
-        }
+        if (t == "void") { return "void"; }
+        if (t == "bool" || t == "_Bool") { return "bool"; }
+        if (t == "double" || t == "float") { return "f64"; }
+        if (t == "size_t" || t == "uintptr_t") { return "usize"; }
+        if (t == "uint64_t" || t == "unsigned long" || t == "unsigned long long") { return "u64"; }
+        if (t == "int64_t" || t == "long" || t == "long long") { return "i64"; }
+        if (t == "uint32_t" || t == "unsigned" || t == "unsigned int") { return "u32"; }
         return "i32";
     }
 
     fn ceeTypeForAbi(abi: StringView) -> StringView {
-        if (abi == "bytes" || abi == "cstr") {
-            return "Slice<u8>";
-        }
-        if (abi == "buffer") {
-            return "SliceMut<u8>";
-        }
-        if (abi == "void") {
-            return "void";
-        }
-        if (abi == "bool") {
-            return "bool";
-        }
-        if (abi == "f64") {
-            return "f64";
-        }
-        if (abi == "usize") {
-            return "usize";
-        }
-        if (abi == "u64") {
-            return "u64";
-        }
-        if (abi == "i64") {
-            return "i64";
-        }
-        if (abi == "u32") {
-            return "u32";
-        }
+        if (abi == "bytes" || abi == "cstr") { return "Slice<u8>"; }
+        if (abi == "buffer") { return "SliceMut<u8>"; }
+        if (abi == "void") { return "void"; }
+        if (abi == "bool") { return "bool"; }
+        if (abi == "f64") { return "f64"; }
+        if (abi == "usize") { return "usize"; }
+        if (abi == "u64") { return "u64"; }
+        if (abi == "i64") { return "i64"; }
+        if (abi == "u32") { return "u32"; }
         return "i32";
     }
 
@@ -102,25 +187,37 @@ public struct Parser {
         if (t == "str" || t == "string" || t == "bytes" || t == "[]byte" || t == "Uint8Array") {
             return "bytes";
         }
-        if (t == "bool" || t == "boolean") {
-            return "bool";
-        }
-        if (t == "float" || t == "float64" || t == "number") {
-            return "f64";
-        }
-        if (t == "int64" || t == "bigint") {
-            return "i64";
-        }
-        if (t == "uint32") {
-            return "u32";
-        }
-        if (t == "void" || t == "None") {
-            return "void";
-        }
+        if (t == "bool" || t == "boolean") { return "bool"; }
+        if (t == "float" || t == "float64" || t == "number") { return "f64"; }
+        if (t == "int64" || t == "bigint") { return "i64"; }
+        if (t == "uint32") { return "u32"; }
+        if (t == "void" || t == "None") { return "void"; }
         return "i32";
     }
 
-    fn parseCParams(raw: StringView) -> Result<Vector<ParamSpec>, AppError> {
+    fn findStructMatch(tyPart: StringView, structs: borrow Vector<StructSpec>) -> usize? {
+        for (i in 0..structs.length) {
+            if (StrUtil.contains(tyPart, structs[i].name.view())) {
+                return Some(i);
+            }
+        }
+        return null;
+    }
+
+    fn findEnumMatch(tyPart: StringView, enums: borrow Vector<EnumSpec>) -> usize? {
+        for (i in 0..enums.length) {
+            if (StrUtil.contains(tyPart, enums[i].name.view())) {
+                return Some(i);
+            }
+        }
+        return null;
+    }
+
+    fn parseCParams(
+        raw: StringView,
+        structs: borrow Vector<StructSpec>,
+        enums: borrow Vector<EnumSpec>,
+    ) -> Result<Vector<ParamSpec>, AppError> {
         var params = Vector<ParamSpec>.create();
         let trimmed = StrUtil.trim(raw);
         if (trimmed.bytes().length == 0 || trimmed == "void") {
@@ -151,25 +248,70 @@ public struct Parser {
                     fallback
                 };
                 let tyPart = StrUtil.trim(part[0..nameStart]);
-                let abi = Parser.mapCType(tyPart);
-                // Collapse `(ptr, len)` pairs into a single `bytes` or `buffer` param.
-                let isLenFollowup = prevWasPtr && (abi == "usize" || abi == "i32" || abi == "u32");
-                if (isLenFollowup) {
-                    if (params.length > 0 && params[params.length - 1].abiKind.view() == "cstr") {
-                        params[params.length - 1].abiKind = StrUtil.cloneView("bytes")?;
+
+                var matchedCustom = false;
+                if (StrUtil.contains(tyPart, "*")) {
+                    match (Parser.findStructMatch(tyPart, structs)) {
+                        Some(si) => {
+                            let sname = structs[si].name.view();
+                            var kind = String.create();
+                            StrUtil.append(mut kind, "struct_ptr:")?;
+                            StrUtil.append(mut kind, sname)?;
+                            match (params.push(ParamSpec {
+                                name: StrUtil.cloneView(pName.view())?,
+                                ceeType: StrUtil.cloneView(sname)?,
+                                abiKind: kind,
+                            })) {
+                                Ok() => {}
+                                Err(_) => { return Err(AppError.OutOfMemory); }
+                            }
+                            prevWasPtr = false;
+                            matchedCustom = true;
+                        }
+                        null => {}
                     }
-                    prevWasPtr = false;
                 } else {
-                    let ceeTy = Parser.ceeTypeForAbi(abi);
-                    match (params.push(ParamSpec {
-                        name: pName,
-                        ceeType: StrUtil.cloneView(ceeTy)?,
-                        abiKind: StrUtil.cloneView(abi)?,
-                    })) {
-                        Ok() => {}
-                        Err(_) => { return Err(AppError.OutOfMemory); }
+                    match (Parser.findEnumMatch(tyPart, enums)) {
+                        Some(ei) => {
+                            let ename = enums[ei].name.view();
+                            var kind = String.create();
+                            StrUtil.append(mut kind, "enum:")?;
+                            StrUtil.append(mut kind, ename)?;
+                            match (params.push(ParamSpec {
+                                name: StrUtil.cloneView(pName.view())?,
+                                ceeType: StrUtil.cloneView(ename)?,
+                                abiKind: kind,
+                            })) {
+                                Ok() => {}
+                                Err(_) => { return Err(AppError.OutOfMemory); }
+                            }
+                            prevWasPtr = false;
+                            matchedCustom = true;
+                        }
+                        null => {}
                     }
-                    prevWasPtr = abi == "bytes" || abi == "cstr" || abi == "buffer";
+                }
+
+                if (!matchedCustom) {
+                    let abi = Parser.mapCType(tyPart);
+                    let isLenFollowup = prevWasPtr && (abi == "usize" || abi == "i32" || abi == "u32");
+                    if (isLenFollowup) {
+                        if (params.length > 0 && params[params.length - 1].abiKind.view() == "cstr") {
+                            params[params.length - 1].abiKind = StrUtil.cloneView("bytes")?;
+                        }
+                        prevWasPtr = false;
+                    } else {
+                        let ceeTy = Parser.ceeTypeForAbi(abi);
+                        match (params.push(ParamSpec {
+                            name: pName,
+                            ceeType: StrUtil.cloneView(ceeTy)?,
+                            abiKind: StrUtil.cloneView(abi)?,
+                        })) {
+                            Ok() => {}
+                            Err(_) => { return Err(AppError.OutOfMemory); }
+                        }
+                        prevWasPtr = abi == "bytes" || abi == "cstr" || abi == "buffer";
+                    }
                 }
                 idx += 1;
             }
@@ -197,7 +339,6 @@ public struct Parser {
             let part = StrUtil.trim(trimmed[start..end]);
             if (part.bytes().length > 0) {
                 if (goStyle) {
-                    // `name type`
                     match (Parser.findByte(part, 32, 0)) {
                         Some(sp) => {
                             let pName = StrUtil.trim(part[0..sp]);
@@ -215,7 +356,6 @@ public struct Parser {
                         null => {}
                     }
                 } else {
-                    // `name: type` or bare `name`
                     match (Parser.findByte(part, 58, 0)) {
                         Some(colon) => {
                             let pName = StrUtil.trim(part[0..colon]);
@@ -252,6 +392,8 @@ public struct Parser {
     }
 
     fn extractC(source: StringView) -> Result<Vector<FnSpec>, AppError> {
+        let structs = Parser.extractCStructs(source)?;
+        let enums = Parser.extractCEnums(source)?;
         var out = Vector<FnSpec>.create();
         let b = source.bytes();
         var start: usize = 0;
@@ -295,7 +437,11 @@ public struct Parser {
                                             let retRaw = StrUtil.trim(head[0..nameStart]);
                                             let retAbi = Parser.mapCType(retRaw);
                                             if (retAbi != "bytes" && retAbi != "cstr" && retAbi != "buffer") {
-                                                let params = Parser.parseCParams(line[open + 1..close])?;
+                                                let params = Parser.parseCParams(
+                                                    line[open + 1..close],
+                                                    structs,
+                                                    enums,
+                                                )?;
                                                 match (out.push(FnSpec {
                                                     name: StrUtil.cloneView(fnName)?,
                                                     returnType: StrUtil.cloneView(Parser.ceeTypeForAbi(retAbi))?,
@@ -446,7 +592,6 @@ public struct Parser {
                                 if (close > open) {
                                     let fnName = StrUtil.trim(rawLine[5..open]);
                                     let fb = fnName.bytes();
-                                    // Go exported functions start with an uppercase ASCII letter.
                                     if (fb.length > 0 && fb[0] >= 65 && fb[0] <= 90) {
                                         var retTy: StringView = "i32";
                                         let tail = StrUtil.trim(rawLine[close + 1..rawLine.bytes().length]);
@@ -485,18 +630,10 @@ public struct Parser {
     }
 
     public fn extractFunctions(lang: StringView, source: StringView) -> Result<Vector<FnSpec>, AppError> {
-        if (lang == "c") {
-            return Parser.extractC(source);
-        }
-        if (lang == "python") {
-            return Parser.extractPython(source);
-        }
-        if (lang == "ts") {
-            return Parser.extractTs(source);
-        }
-        if (lang == "go") {
-            return Parser.extractGo(source);
-        }
+        if (lang == "c") { return Parser.extractC(source); }
+        if (lang == "python") { return Parser.extractPython(source); }
+        if (lang == "ts") { return Parser.extractTs(source); }
+        if (lang == "go") { return Parser.extractGo(source); }
         return Ok(Vector<FnSpec>.create());
     }
 }

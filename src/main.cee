@@ -36,6 +36,12 @@ fn printUsage() {
     Console.writeLine(
         "  ceesafe-anything lift <dir> [out]             Assemble ported units into a standalone CeeSafe app",
     );
+    Console.writeLine(
+        "  ceesafe-anything app-record <dir> -- <cmd..>  Record whole-app CLI stdout/stderr/exit cases",
+    );
+    Console.writeLine(
+        "  ceesafe-anything app-replay <dir> -- <cmd..>  Replay app-cases.jsonl against a lifted binary",
+    );
     Console.writeLine("  ceesafe-anything lookup <lang> <dep>          Look up the CeeSafe library equivalent");
     Console.writeLine("  ceesafe-anything mcp                          Start the stdio MCP server");
 }
@@ -271,6 +277,43 @@ fn main() -> i32 {
         match (Lift.run(srcDir, outOpt)) {
             Ok(msg) => { Console.write(msg.view()); return 0; }
             Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+        }
+    }
+    if (cmd == "app-record" || cmd == "app-replay") {
+        let dir = match (argAt(2)) {
+            Some(v) => v,
+            null => ".",
+        };
+        var cmdArgs = Vector<StringView>.create();
+        var startIdx: usize = 3;
+        match (argAt(3)) {
+            Some(sep) => {
+                if (sep == "--") {
+                    startIdx = 4;
+                }
+            }
+            null => {}
+        }
+        for (i in startIdx..argc) {
+            match (argAt(i)) {
+                Some(a) => { match (cmdArgs.push(a)) { Ok() => {} Err(_) => {} } }
+                null => {}
+            }
+        }
+        if (cmd == "app-record") {
+            match (AppHarness.record(dir, cmdArgs)) {
+                Ok(cases) => {
+                    Console.write("recorded ");
+                    Console.writeLine(cases.view());
+                    return 0;
+                }
+                Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+            }
+        } else {
+            match (AppHarness.replay(dir, cmdArgs)) {
+                Ok(summary) => { Console.write(summary.view()); return 0; }
+                Err(e) => { Console.writeError(AppErrors.describe(e)); return 1; }
+            }
         }
     }
 

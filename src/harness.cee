@@ -38,7 +38,7 @@ public struct Harness {
 
     public fn driverScript() -> Result<String, AppError> {
         var s = String.create();
-        StrUtil.append(mut s, "import ctypes, json, os, signal, sys, time\n\n")?;
+        StrUtil.append(mut s, "import ctypes, json, os, signal, struct, sys, time\n\n")?;
         StrUtil.append(mut s, "CTYPES_MAP = {\n")?;
         StrUtil.append(mut s, "    'i32': ctypes.c_int32, 'u32': ctypes.c_uint32,\n")?;
         StrUtil.append(mut s, "    'i64': ctypes.c_int64, 'u64': ctypes.c_uint64,\n")?;
@@ -57,22 +57,37 @@ public struct Harness {
         StrUtil.append(mut s, "    'f64': [0.0, 1.5, -3.25, 100.0],\n")?;
         StrUtil.append(mut s, "    'bool': [False, True],\n")?;
         StrUtil.append(mut s, "}\n\n")?;
-        StrUtil.append(mut s, "def gen_cases(exports):\n")?;
+        StrUtil.append(
+            mut s,
+            "STRUCT_FMT = {'i32': '<i', 'u32': '<I', 'i64': '<q', 'u64': '<Q', 'usize': '<Q', 'f64': '<d', 'bool': '<?'}\n",
+        )?;
+        StrUtil.append(mut s, "def sample_pool(kind, structs_by_name, enums_by_name):\n")?;
+        StrUtil.append(mut s, "    if kind.startswith('enum:'):\n")?;
+        StrUtil.append(mut s, "        en = enums_by_name.get(kind[5:], [])\n")?;
+        StrUtil.append(mut s, "        return list(range(max(len(en), 2)))\n")?;
+        StrUtil.append(mut s, "    if kind.startswith('struct_ptr:'):\n")?;
+        StrUtil.append(mut s, "        fs = structs_by_name.get(kind[11:], [])\n")?;
+        StrUtil.append(mut s, "        return [[0 for _ in fs], [3 for _ in fs], [7 for _ in fs]]\n")?;
+        StrUtil.append(mut s, "    return SAMPLES.get(kind, [0, 1])\n\n")?;
+        StrUtil.append(mut s, "def gen_cases(exports, structs_by_name, enums_by_name):\n")?;
         StrUtil.append(mut s, "    out = []\n")?;
         StrUtil.append(mut s, "    for exp in exports:\n")?;
         StrUtil.append(mut s, "        params = exp.get('params', [])\n")?;
         StrUtil.append(mut s, "        if not params:\n")?;
         StrUtil.append(mut s, "            out.append({'fn': exp['name'], 'symbol': exp['symbol'], 'args': []})\n")?;
         StrUtil.append(mut s, "            continue\n")?;
-        StrUtil.append(mut s, "        pools = [SAMPLES.get(p['kind'], [0, 1]) for p in params]\n")?;
+        StrUtil.append(
+            mut s,
+            "        pools = [sample_pool(p['kind'], structs_by_name, enums_by_name) for p in params]\n",
+        )?;
         StrUtil.append(mut s, "        n = max(len(p) for p in pools)\n")?;
         StrUtil.append(mut s, "        for i in range(n):\n")?;
         StrUtil.append(mut s, "            args = [pool[i % len(pool)] for pool in pools]\n")?;
         StrUtil.append(mut s, "            out.append({'fn': exp['name'], 'symbol': exp['symbol'], 'args': args})\n")?;
         StrUtil.append(mut s, "    return out\n\n")?;
-        StrUtil.append(mut s, "def call_fn(lib, sym_name, spec, args):\n")?;
+        StrUtil.append(mut s, "def call_fn(lib, sym_name, spec, args, structs_by_name=None):\n")?;
         StrUtil.append(mut s, "    fn = getattr(lib, sym_name)\n")?;
-        StrUtil.append(mut s, "    argtypes, c_args = [], []\n")?;
+        StrUtil.append(mut s, "    argtypes, c_args, keep = [], [], []\n")?;
         StrUtil.append(mut s, "    for p, val in zip(spec.get('params', []), args):\n")?;
         StrUtil.append(mut s, "        k = p['kind']\n")?;
         StrUtil.append(mut s, "        if k == 'bytes':\n")?;
@@ -86,8 +101,22 @@ public struct Harness {
         StrUtil.append(mut s, "        elif k == 'buffer':\n")?;
         StrUtil.append(mut s, "            raw = str(val).encode('utf-8')\n")?;
         StrUtil.append(mut s, "            buf = ctypes.create_string_buffer(raw, max(len(raw), 1))\n")?;
+        StrUtil.append(mut s, "            keep.append(buf)\n")?;
         StrUtil.append(mut s, "            argtypes.extend([ctypes.c_void_p, ctypes.c_size_t])\n")?;
         StrUtil.append(mut s, "            c_args.extend([ctypes.cast(buf, ctypes.c_void_p), len(raw)])\n")?;
+        StrUtil.append(mut s, "        elif k.startswith('struct_ptr:'):\n")?;
+        StrUtil.append(mut s, "            fs = (structs_by_name or {}).get(k[11:], [])\n")?;
+        StrUtil.append(
+            mut s,
+            "            raw = b''.join(struct.pack(STRUCT_FMT.get(f['kind'], '<i'), val[idx] if idx < len(val) else 0) for idx, f in enumerate(fs))\n",
+        )?;
+        StrUtil.append(mut s, "            buf = ctypes.create_string_buffer(raw, max(len(raw), 1))\n")?;
+        StrUtil.append(mut s, "            keep.append(buf)\n")?;
+        StrUtil.append(mut s, "            argtypes.append(ctypes.c_void_p)\n")?;
+        StrUtil.append(mut s, "            c_args.append(ctypes.cast(buf, ctypes.c_void_p))\n")?;
+        StrUtil.append(mut s, "        elif k.startswith('enum:'):\n")?;
+        StrUtil.append(mut s, "            argtypes.append(ctypes.c_int32)\n")?;
+        StrUtil.append(mut s, "            c_args.append(int(val))\n")?;
         StrUtil.append(mut s, "        elif k == 'f64':\n")?;
         StrUtil.append(mut s, "            argtypes.append(ctypes.c_double)\n")?;
         StrUtil.append(mut s, "            c_args.append(float(val))\n")?;
@@ -105,13 +134,13 @@ public struct Harness {
         StrUtil.append(mut s, "    if ret_k == 'f64': return {'ok': float(res)}\n")?;
         StrUtil.append(mut s, "    if ret_k == 'bool': return {'ok': bool(res)}\n")?;
         StrUtil.append(mut s, "    return {'ok': int(res)}\n\n")?;
-        StrUtil.append(mut s, "def isolated(lib, sym_name, spec, args):\n")?;
+        StrUtil.append(mut s, "def isolated(lib, sym_name, spec, args, structs_by_name):\n")?;
         StrUtil.append(mut s, "    r, w = os.pipe()\n")?;
         StrUtil.append(mut s, "    pid = os.fork()\n")?;
         StrUtil.append(mut s, "    if pid == 0:\n")?;
         StrUtil.append(mut s, "        os.close(r)\n")?;
         StrUtil.append(mut s, "        try:\n")?;
-        StrUtil.append(mut s, "            res = call_fn(lib, sym_name, spec, args)\n")?;
+        StrUtil.append(mut s, "            res = call_fn(lib, sym_name, spec, args, structs_by_name)\n")?;
         StrUtil.append(mut s, "        except Exception as e:\n")?;
         StrUtil.append(mut s, "            res = {'error': f'{type(e).__name__}: {e}'}\n")?;
         StrUtil.append(mut s, "        os.write(w, json.dumps(res).encode('utf-8'))\n")?;
@@ -131,19 +160,27 @@ public struct Harness {
         StrUtil.append(mut s, "lib_path, manifest_path, cases_path = sys.argv[2], sys.argv[3], sys.argv[4]\n")?;
         StrUtil.append(mut s, "manifest = json.load(open(manifest_path, encoding='utf-8'))\n")?;
         StrUtil.append(mut s, "exports = manifest.get('exports', [])\n")?;
+        StrUtil.append(
+            mut s,
+            "structs_by_name = {st['name']: st.get('fields', []) for st in manifest.get('structs', [])}\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "enums_by_name = {en['name']: en.get('variants', []) for en in manifest.get('enums', [])}\n",
+        )?;
         StrUtil.append(mut s, "by_name = {e['name']: e for e in exports}\n")?;
         StrUtil.append(mut s, "lib = ctypes.CDLL(lib_path)\n")?;
         StrUtil.append(mut s, "if mode == 'record':\n")?;
         StrUtil.append(mut s, "    inputs_path = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else ''\n")?;
         StrUtil.append(
             mut s,
-            "    cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else gen_cases(exports)\n",
+            "    cases = [json.loads(l) for l in open(inputs_path) if l.strip()] if inputs_path else gen_cases(exports, structs_by_name, enums_by_name)\n",
         )?;
         StrUtil.append(mut s, "    with open(cases_path, 'w', encoding='utf-8') as out:\n")?;
         StrUtil.append(mut s, "        for c in cases:\n")?;
         StrUtil.append(mut s, "            spec = by_name[c['fn']]\n")?;
         StrUtil.append(mut s, "            rec = {'fn': c['fn'], 'symbol': spec['symbol'], 'args': c['args']}\n")?;
-        StrUtil.append(mut s, "            rec.update(isolated(lib, c['fn'], spec, c['args']))\n")?;
+        StrUtil.append(mut s, "            rec.update(isolated(lib, c['fn'], spec, c['args'], structs_by_name))\n")?;
         StrUtil.append(mut s, "            out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n")?;
         StrUtil.append(mut s, "    print(f'recorded {len(cases)} cases to {cases_path}')\n")?;
         StrUtil.append(mut s, "elif mode == 'diff':\n")?;
@@ -168,7 +205,7 @@ public struct Harness {
         StrUtil.append(mut s, "            passed += 1\n")?;
         StrUtil.append(mut s, "            continue\n")?;
         StrUtil.append(mut s, "        sym = c.get('symbol', spec['symbol'])\n")?;
-        StrUtil.append(mut s, "        got = isolated(lib, sym, spec, c['args'])\n")?;
+        StrUtil.append(mut s, "        got = isolated(lib, sym, spec, c['args'], structs_by_name)\n")?;
         StrUtil.append(mut s, "        exp = {'error': c['error']} if 'error' in c else {'ok': c.get('ok')}\n")?;
         StrUtil.append(mut s, "        if json.dumps(got, sort_keys=True) == json.dumps(exp, sort_keys=True):\n")?;
         StrUtil.append(mut s, "            passed += 1\n")?;
@@ -207,10 +244,16 @@ public struct Harness {
         StrUtil.append(mut s, "    for fn_name, items in groups.items():\n")?;
         StrUtil.append(mut s, "        spec = by_name[fn_name]\n")?;
         StrUtil.append(mut s, "        def measure(target_lib, sym):\n")?;
-        StrUtil.append(mut s, "            for c in items: call_fn(target_lib, sym, spec, c['args'])\n")?;
+        StrUtil.append(
+            mut s,
+            "            for c in items: call_fn(target_lib, sym, spec, c['args'], structs_by_name)\n",
+        )?;
         StrUtil.append(mut s, "            passes, t0 = 0, time.perf_counter_ns()\n")?;
         StrUtil.append(mut s, "            while True:\n")?;
-        StrUtil.append(mut s, "                for c in items: call_fn(target_lib, sym, spec, c['args'])\n")?;
+        StrUtil.append(
+            mut s,
+            "                for c in items: call_fn(target_lib, sym, spec, c['args'], structs_by_name)\n",
+        )?;
         StrUtil.append(mut s, "                passes += 1\n")?;
         StrUtil.append(mut s, "                dt = time.perf_counter_ns() - t0\n")?;
         StrUtil.append(mut s, "                if dt >= 100_000_000: return dt / (passes * len(items))\n")?;

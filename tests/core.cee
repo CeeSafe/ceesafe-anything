@@ -373,3 +373,51 @@ fn rules_profile_and_lift_codegen() -> Result<void, TestFailure> {
     }
     return Ok();
 }
+
+@test
+fn app_harness_and_c_struct_enum_codegen() -> Result<void, TestFailure> {
+    match (AppHarness.appDriverScript()) {
+        Ok(script) => {
+            if (!StrUtil.contains(script.view(), "mode == 'record'")
+                || !StrUtil.contains(script.view(), "mode == 'replay'")) {
+                return Err(fail("AppHarness driver script missing record/replay"));
+            }
+        }
+        Err(_) => { return Err(fail("AppHarness.appDriverScript failed")); }
+    }
+
+    let cSrc = "typedef enum {\n    SHAPE_RECT = 0,\n    SHAPE_TRIANGLE = 1,\n} ShapeKind;\ntypedef struct {\n    int32_t width;\n    int32_t height;\n} Rect2D;\nint32_t rect_area(const Rect2D *r) {\n    return 0;\n}\nint32_t shape_area(ShapeKind kind, int32_t w, int32_t h) {\n    return 0;\n}\n";
+    let structs = match (Parser.extractCStructs(cSrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("extractCStructs failed")); },
+    };
+    let enums = match (Parser.extractCEnums(cSrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("extractCEnums failed")); },
+    };
+    if (structs.length != 1 || structs[0].name.view() != "Rect2D" || structs[0].fields.length != 2) {
+        return Err(fail("unexpected C structs"));
+    }
+    if (enums.length != 1 || enums[0].name.view() != "ShapeKind" || enums[0].variants.length != 2) {
+        return Err(fail("unexpected C enums"));
+    }
+    let fns = match (Parser.extractFunctions("c", cSrc)) {
+        Ok(v) => v,
+        Err(_) => { return Err(fail("extractFunctions failed")); },
+    };
+    if (fns.length != 2
+        || fns[0].params[0].abiKind.view() != "struct_ptr:Rect2D"
+        || fns[1].params[0].abiKind.view() != "enum:ShapeKind") {
+        return Err(fail("unexpected struct/enum param abiKind"));
+    }
+    let typesCee = match (Bridge.buildTypesCee(structs, enums)) {
+        Ok(s) => s,
+        Err(_) => { return Err(fail("buildTypesCee failed")); },
+    };
+    if (!StrUtil.contains(typesCee.view(), "public struct Rect2D")
+        || !StrUtil.contains(typesCee.view(), "public enum ShapeKind")
+        || !StrUtil.contains(typesCee.view(), "ShapeKind_ffi")) {
+        return Err(fail("types.cee missing struct or enum definitions"));
+    }
+    return Ok();
+}

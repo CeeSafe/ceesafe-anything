@@ -1,0 +1,142 @@
+// `app-record` & `app-replay`: whole-app CLI black-box recording and replay against a lifted CeeSafe binary.
+
+public struct AppHarness {
+    public fn appDriverScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import json, os, subprocess, sys\n\n")?;
+        StrUtil.append(mut s, "mode, work_dir, cases_path = sys.argv[1], sys.argv[2], sys.argv[3]\n")?;
+        StrUtil.append(mut s, "if mode == 'record':\n")?;
+        StrUtil.append(mut s, "    inputs_path = sys.argv[4]\n")?;
+        StrUtil.append(mut s, "    base_cmd = sys.argv[5:]\n")?;
+        StrUtil.append(mut s, "    if inputs_path and os.path.exists(inputs_path):\n")?;
+        StrUtil.append(
+            mut s,
+            "        specs = [json.loads(l) for l in open(inputs_path, encoding='utf-8') if l.strip()]\n",
+        )?;
+        StrUtil.append(mut s, "    else:\n")?;
+        StrUtil.append(mut s, "        specs = [{'args': [], 'stdin': ''}]\n")?;
+        StrUtil.append(mut s, "    with open(cases_path, 'w', encoding='utf-8') as out:\n")?;
+        StrUtil.append(mut s, "        for sp in specs:\n")?;
+        StrUtil.append(mut s, "            extra = [str(a) for a in sp.get('args', [])]\n")?;
+        StrUtil.append(mut s, "            stdin_txt = str(sp.get('stdin', ''))\n")?;
+        StrUtil.append(
+            mut s,
+            "            p = subprocess.run(base_cmd + extra, input=stdin_txt, capture_output=True, text=True)\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "            rec = {'args': extra, 'stdin': stdin_txt, 'status': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}\n",
+        )?;
+        StrUtil.append(mut s, "            out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n")?;
+        StrUtil.append(mut s, "elif mode == 'replay':\n")?;
+        StrUtil.append(mut s, "    out_json, out_txt = sys.argv[4], sys.argv[5]\n")?;
+        StrUtil.append(mut s, "    base_cmd = sys.argv[6:]\n")?;
+        StrUtil.append(
+            mut s,
+            "    cases = [json.loads(l) for l in open(cases_path, encoding='utf-8') if l.strip()]\n",
+        )?;
+        StrUtil.append(mut s, "    passed, failed, mismatches = 0, 0, []\n")?;
+        StrUtil.append(mut s, "    for c in cases:\n")?;
+        StrUtil.append(
+            mut s,
+            "        p = subprocess.run(base_cmd + c.get('args', []), input=c.get('stdin', ''), capture_output=True, text=True)\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "        ok = (p.returncode == c.get('status') and p.stdout == c.get('stdout') and p.stderr == c.get('stderr'))\n",
+        )?;
+        StrUtil.append(mut s, "        if ok:\n")?;
+        StrUtil.append(mut s, "            passed += 1\n")?;
+        StrUtil.append(mut s, "        else:\n")?;
+        StrUtil.append(mut s, "            failed += 1\n")?;
+        StrUtil.append(
+            mut s,
+            "            mismatches.append({'args': c.get('args', []), 'expected': {'status': c.get('status'), 'stdout': c.get('stdout'), 'stderr': c.get('stderr')}, 'actual': {'status': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}})\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "    summary = {'total': len(cases), 'passed': passed, 'failed': failed, 'mismatches': mismatches}\n",
+        )?;
+        StrUtil.append(mut s, "    json.dump(summary, open(out_json, 'w', encoding='utf-8'), indent=2)\n")?;
+        StrUtil.append(
+            mut s,
+            "    open(out_txt, 'w', encoding='utf-8').write(f'{passed}/{len(cases)} app cases matched ({failed} failed)\\n')\n",
+        )?;
+        StrUtil.append(mut s, "    sys.exit(0 if failed == 0 else 1)\n")?;
+        return Ok(s);
+    }
+
+    public fn record(dir: StringView, cmdArgs: borrow Vector<StringView>) -> Result<String, AppError> {
+        if (cmdArgs.length == 0) {
+            return Err(AppError.InvalidArg);
+        }
+        let workDir = StrUtil.joinPath(dir, ".ceesafe-anything")?;
+        FsUtil.ensureDir(workDir.view())?;
+        let driverPath = StrUtil.joinPath(workDir.view(), "app_driver.py")?;
+        let script = AppHarness.appDriverScript()?;
+        FsUtil.writeText(driverPath.view(), script.view())?;
+        let casesPath = StrUtil.joinPath(dir, "app-cases.jsonl")?;
+        let inputsPath = StrUtil.joinPath(dir, "app-inputs.jsonl")?;
+
+        var pyArgs = Vector<StringView>.create();
+        match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push("record")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(workDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(inputsPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        for (i in 0..cmdArgs.length) {
+            match (pyArgs.push(cmdArgs[i])) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+        }
+        let ran = match (Process.capture("python3", pyArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        if (ran.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+        return Ok(casesPath);
+    }
+
+    public fn replay(dir: StringView, cmdArgs: borrow Vector<StringView>) -> Result<String, AppError> {
+        if (cmdArgs.length == 0) {
+            return Err(AppError.InvalidArg);
+        }
+        let casesPath = StrUtil.joinPath(dir, "app-cases.jsonl")?;
+        if (!FsUtil.fileExists(casesPath.view())) {
+            return Err(AppError.NotFound);
+        }
+        let workDir = StrUtil.joinPath(dir, ".ceesafe-anything")?;
+        FsUtil.ensureDir(workDir.view())?;
+        let driverPath = StrUtil.joinPath(workDir.view(), "app_driver.py")?;
+        let script = AppHarness.appDriverScript()?;
+        FsUtil.writeText(driverPath.view(), script.view())?;
+        let outJson = StrUtil.joinPath(workDir.view(), "app-replay.json")?;
+        let outTxt = StrUtil.joinPath(workDir.view(), "app-replay.txt")?;
+
+        var pyArgs = Vector<StringView>.create();
+        match (pyArgs.push(driverPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push("replay")) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(workDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(outJson.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        match (pyArgs.push(outTxt.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+        for (i in 0..cmdArgs.length) {
+            match (pyArgs.push(cmdArgs[i])) {
+                Ok() => {}
+                Err(_) => { return Err(AppError.OutOfMemory); }
+            }
+        }
+        let ran = match (Process.capture("python3", pyArgs, null)) {
+            Ok(out) => out,
+            Err(e) => { return Err(AppErrors.fromIo(e)); },
+        };
+        let summary = FsUtil.readText(outTxt.view())?;
+        if (ran.status != 0) {
+            return Err(AppError.CommandFailed);
+        }
+        return Ok(summary);
+    }
+}

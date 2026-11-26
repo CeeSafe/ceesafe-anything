@@ -1,5 +1,5 @@
 // `bridge`: scaffold a pure CeeSafe library package (`ceesafe.toml`, `src/port.cee`, `src/bridge.cee`,
-// `include/<name>.h`, `ceesafe-anything.json`) for one source unit, auto-extracting exported function signatures.
+// optional `src/types.cee`, `include/<name>.h`, `ceesafe-anything.json`) for one source unit.
 
 public struct Bridge {
     fn cTypeForAbi(abi: StringView) -> StringView {
@@ -11,6 +11,12 @@ public struct Bridge {
         if (abi == "bool") { return "bool"; }
         if (abi == "void") { return "void"; }
         return "int32_t";
+    }
+
+    fn fieldByteSize(abi: StringView) -> u64 {
+        if (abi == "i64" || abi == "u64" || abi == "usize" || abi == "f64") { return 8; }
+        if (abi == "bool") { return 1; }
+        return 4;
     }
 
     fn defaultExports() -> Result<Vector<FnSpec>, AppError> {
@@ -35,11 +41,128 @@ public struct Bridge {
         return Ok(fns);
     }
 
+    public fn buildTypesCee(
+        structs: borrow Vector<StructSpec>,
+        enums: borrow Vector<EnumSpec>,
+    ) -> Result<String, AppError> {
+        var out = String.create();
+        StrUtil.append(mut out, "// Generated C struct and enum types for CeeSafe FFI.\n\n")?;
+        if (structs.length > 0) {
+            StrUtil.append(mut out, "public struct FfiCodec {\n")?;
+            StrUtil.append(mut out, "    public fn readU32Le(b: Slice<u8>, off: usize) -> u32 {\n")?;
+            StrUtil.append(mut out, "        if (off + 4 > b.length) { return 0; }\n")?;
+            StrUtil.append(
+                mut out,
+                "        return (b[off] as u32) | ((b[off + 1] as u32) << 8) | ((b[off + 2] as u32) << 16) | ((b[off + 3] as u32) << 24);\n",
+            )?;
+            StrUtil.append(mut out, "    }\n\n")?;
+            StrUtil.append(mut out, "    public fn readU64Le(b: Slice<u8>, off: usize) -> u64 {\n")?;
+            StrUtil.append(mut out, "        if (off + 8 > b.length) { return 0; }\n")?;
+            StrUtil.append(mut out, "        let lo = FfiCodec.readU32Le(b, off) as u64;\n")?;
+            StrUtil.append(mut out, "        let hi = FfiCodec.readU32Le(b, off + 4) as u64;\n")?;
+            StrUtil.append(mut out, "        return lo | (hi << 32);\n")?;
+            StrUtil.append(mut out, "    }\n}\n\n")?;
+        }
+        for (i in 0..enums.length) {
+            let ename = enums[i].name.view();
+            StrUtil.append(mut out, "public enum ")?;
+            StrUtil.append(mut out, ename)?;
+            StrUtil.append(mut out, " {\n")?;
+            for (j in 0..enums[i].variants.length) {
+                StrUtil.append(mut out, "    ")?;
+                StrUtil.append(mut out, enums[i].variants[j].view())?;
+                StrUtil.append(mut out, ",\n")?;
+            }
+            StrUtil.append(mut out, "}\n\npublic struct ")?;
+            StrUtil.append(mut out, ename)?;
+            StrUtil.append(mut out, "_ffi {\n    public fn fromI32(v: i32) -> ")?;
+            StrUtil.append(mut out, ename)?;
+            StrUtil.append(mut out, " {\n")?;
+            for (j in 1..enums[i].variants.length) {
+                StrUtil.append(mut out, "        if (v == ")?;
+                StrUtil.appendNum(mut out, j as u64)?;
+                StrUtil.append(mut out, ") { return ")?;
+                StrUtil.append(mut out, ename)?;
+                StrUtil.append(mut out, ".")?;
+                StrUtil.append(mut out, enums[i].variants[j].view())?;
+                StrUtil.append(mut out, "; }\n")?;
+            }
+            StrUtil.append(mut out, "        return ")?;
+            StrUtil.append(mut out, ename)?;
+            StrUtil.append(mut out, ".")?;
+            StrUtil.append(mut out, enums[i].variants[0].view())?;
+            StrUtil.append(mut out, ";\n    }\n}\n\n")?;
+        }
+        for (i in 0..structs.length) {
+            let sname = structs[i].name.view();
+            StrUtil.append(mut out, "public struct ")?;
+            StrUtil.append(mut out, sname)?;
+            StrUtil.append(mut out, " {\n")?;
+            var totalBytes: u64 = 0;
+            for (j in 0..structs[i].fields.length) {
+                StrUtil.append(mut out, "    public ")?;
+                StrUtil.append(mut out, structs[i].fields[j].name.view())?;
+                StrUtil.append(mut out, ": ")?;
+                StrUtil.append(mut out, structs[i].fields[j].ceeType.view())?;
+                StrUtil.append(mut out, ";\n")?;
+                totalBytes += Bridge.fieldByteSize(structs[i].fields[j].abiKind.view());
+            }
+            StrUtil.append(mut out, "\n    public fn byteSize() -> usize => ")?;
+            StrUtil.appendNum(mut out, totalBytes)?;
+            StrUtil.append(mut out, ";\n\n    public fn fromBytes(b: Slice<u8>) -> ")?;
+            StrUtil.append(mut out, sname)?;
+            StrUtil.append(mut out, " {\n        return ")?;
+            StrUtil.append(mut out, sname)?;
+            StrUtil.append(mut out, " {\n")?;
+            var off: u64 = 0;
+            for (j in 0..structs[i].fields.length) {
+                let fnm = structs[i].fields[j].name.view();
+                let fk = structs[i].fields[j].abiKind.view();
+                StrUtil.append(mut out, "            ")?;
+                StrUtil.append(mut out, fnm)?;
+                StrUtil.append(mut out, ": ")?;
+                if (fk == "u32") {
+                    StrUtil.append(mut out, "FfiCodec.readU32Le(b, ")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, ")")?;
+                } else if (fk == "u64") {
+                    StrUtil.append(mut out, "FfiCodec.readU64Le(b, ")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, ")")?;
+                } else if (fk == "i64") {
+                    StrUtil.append(mut out, "truncate<i64>(FfiCodec.readU64Le(b, ")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, "))")?;
+                } else if (fk == "usize") {
+                    StrUtil.append(mut out, "truncate<usize>(FfiCodec.readU64Le(b, ")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, "))")?;
+                } else if (fk == "bool") {
+                    StrUtil.append(mut out, "if (")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, " < b.length) b[")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, "] != 0 else false")?;
+                } else {
+                    StrUtil.append(mut out, "truncate<i32>(FfiCodec.readU32Le(b, ")?;
+                    StrUtil.appendNum(mut out, off)?;
+                    StrUtil.append(mut out, "))")?;
+                }
+                StrUtil.append(mut out, ",\n")?;
+                off += Bridge.fieldByteSize(fk);
+            }
+            StrUtil.append(mut out, "        };\n    }\n}\n\n")?;
+        }
+        return Ok(out);
+    }
+
     public fn buildManifestJson(
         root: StringView,
         unit: StringView,
         pkgName: StringView,
         fns: borrow Vector<FnSpec>,
+        structs: borrow Vector<StructSpec>,
+        enums: borrow Vector<EnumSpec>,
     ) -> Result<String, AppError> {
         var out = String.create();
         StrUtil.append(mut out, "{\n")?;
@@ -54,11 +177,39 @@ public struct Bridge {
         StrUtil.appendJsonEscaped(mut out, pkgName)?;
         StrUtil.append(mut out, "\",\n")?;
         StrUtil.append(mut out, "  \"target\": \"ceesafe-c-abi\",\n")?;
-        StrUtil.append(mut out, "  \"exports\": [\n")?;
-        for (i in 0..fns.length) {
-            if (i > 0) {
-                StrUtil.append(mut out, ",\n")?;
+        StrUtil.append(mut out, "  \"structs\": [")?;
+        for (i in 0..structs.length) {
+            if (i > 0) { StrUtil.append(mut out, ", ")?; }
+            StrUtil.append(mut out, "{\"name\": \"")?;
+            StrUtil.appendJsonEscaped(mut out, structs[i].name.view())?;
+            StrUtil.append(mut out, "\", \"fields\": [")?;
+            for (j in 0..structs[i].fields.length) {
+                if (j > 0) { StrUtil.append(mut out, ", ")?; }
+                StrUtil.append(mut out, "{\"name\": \"")?;
+                StrUtil.appendJsonEscaped(mut out, structs[i].fields[j].name.view())?;
+                StrUtil.append(mut out, "\", \"kind\": \"")?;
+                StrUtil.append(mut out, structs[i].fields[j].abiKind.view())?;
+                StrUtil.append(mut out, "\"}")?;
             }
+            StrUtil.append(mut out, "]}")?;
+        }
+        StrUtil.append(mut out, "],\n  \"enums\": [")?;
+        for (i in 0..enums.length) {
+            if (i > 0) { StrUtil.append(mut out, ", ")?; }
+            StrUtil.append(mut out, "{\"name\": \"")?;
+            StrUtil.appendJsonEscaped(mut out, enums[i].name.view())?;
+            StrUtil.append(mut out, "\", \"variants\": [")?;
+            for (j in 0..enums[i].variants.length) {
+                if (j > 0) { StrUtil.append(mut out, ", ")?; }
+                StrUtil.append(mut out, "\"")?;
+                StrUtil.appendJsonEscaped(mut out, enums[i].variants[j].view())?;
+                StrUtil.append(mut out, "\"")?;
+            }
+            StrUtil.append(mut out, "]}")?;
+        }
+        StrUtil.append(mut out, "],\n  \"exports\": [\n")?;
+        for (i in 0..fns.length) {
+            if (i > 0) { StrUtil.append(mut out, ",\n")?; }
             StrUtil.append(mut out, "    {\"name\": \"")?;
             StrUtil.appendJsonEscaped(mut out, fns[i].name.view())?;
             StrUtil.append(mut out, "\", \"symbol\": \"port_")?;
@@ -69,9 +220,7 @@ public struct Bridge {
             StrUtil.append(mut out, fns[i].returnType.view())?;
             StrUtil.append(mut out, "\", \"params\": [")?;
             for (j in 0..fns[i].params.length) {
-                if (j > 0) {
-                    StrUtil.append(mut out, ", ")?;
-                }
+                if (j > 0) { StrUtil.append(mut out, ", ")?; }
                 StrUtil.append(mut out, "{\"name\": \"")?;
                 StrUtil.appendJsonEscaped(mut out, fns[i].params[j].name.view())?;
                 StrUtil.append(mut out, "\", \"kind\": \"")?;
@@ -101,25 +250,17 @@ public struct Bridge {
         StrUtil.append(mut out, "// Safe CeeSafe port of `")?;
         StrUtil.append(mut out, unit)?;
         StrUtil.append(mut out, "`.\n")?;
-        StrUtil.append(mut out, "// Replace each stub below with the ported function and add `@test` cases.\n")?;
-        StrUtil.append(
-            mut out,
-            "// CeeSafe rules: handle AllocError explicitly, keep `unsafe` in src/bridge.cee only.\n\n",
-        )?;
+        StrUtil.append(mut out, "// Replace each stub below with the ported function and add `@test` cases.\n\n")?;
         StrUtil.append(mut out, "public struct ")?;
         StrUtil.append(mut out, pkgName)?;
         StrUtil.append(mut out, "_port {\n")?;
         for (i in 0..fns.length) {
-            if (i > 0) {
-                StrUtil.append(mut out, "\n")?;
-            }
+            if (i > 0) { StrUtil.append(mut out, "\n")?; }
             StrUtil.append(mut out, "    public fn ")?;
             StrUtil.append(mut out, fns[i].name.view())?;
             StrUtil.append(mut out, "(")?;
             for (j in 0..fns[i].params.length) {
-                if (j > 0) {
-                    StrUtil.append(mut out, ", ")?;
-                }
+                if (j > 0) { StrUtil.append(mut out, ", ")?; }
                 StrUtil.append(mut out, fns[i].params[j].name.view())?;
                 StrUtil.append(mut out, ": ")?;
                 StrUtil.append(mut out, fns[i].params[j].ceeType.view())?;
@@ -137,8 +278,7 @@ public struct Bridge {
             }
             StrUtil.append(mut out, "        panic(\"unimplemented: port ")?;
             StrUtil.append(mut out, fns[i].name.view())?;
-            StrUtil.append(mut out, "\");\n")?;
-            StrUtil.append(mut out, "    }\n")?;
+            StrUtil.append(mut out, "\");\n    }\n")?;
         }
         StrUtil.append(mut out, "}\n")?;
         return Ok(out);
@@ -153,16 +293,10 @@ public struct Bridge {
         StrUtil.append(mut out, "// C-ABI boundary for `")?;
         StrUtil.append(mut out, unit)?;
         StrUtil.append(mut out, "` (generated by ceesafe-anything).\n")?;
-        StrUtil.append(
-            mut out,
-            "// All `unsafe` pointer conversions live here with `/// Safety:` and `// SAFETY:` comments.\n",
-        )?;
         var anyCstr = false;
         for (i in 0..fns.length) {
             for (j in 0..fns[i].params.length) {
-                if (fns[i].params[j].abiKind.view() == "cstr") {
-                    anyCstr = true;
-                }
+                if (fns[i].params[j].abiKind.view() == "cstr") { anyCstr = true; }
             }
         }
         if (anyCstr) {
@@ -172,7 +306,7 @@ public struct Bridge {
             var usesUnsafe = false;
             for (j in 0..fns[i].params.length) {
                 let k = fns[i].params[j].abiKind.view();
-                if (k == "bytes" || k == "cstr" || k == "buffer") {
+                if (k == "bytes" || k == "cstr" || k == "buffer" || StrUtil.startsWith(k, "struct_ptr:")) {
                     usesUnsafe = true;
                 }
             }
@@ -187,15 +321,11 @@ public struct Bridge {
             StrUtil.append(mut out, pkgName)?;
             StrUtil.append(mut out, "_")?;
             StrUtil.append(mut out, fns[i].name.view())?;
-            StrUtil.append(mut out, "\")\n")?;
-            StrUtil.append(mut out, "public fn bridge_")?;
+            StrUtil.append(mut out, "\")\npublic fn bridge_")?;
             StrUtil.append(mut out, fns[i].name.view())?;
             StrUtil.append(mut out, "(")?;
-            var paramCount: usize = 0;
             for (j in 0..fns[i].params.length) {
-                if (paramCount > 0) {
-                    StrUtil.append(mut out, ", ")?;
-                }
+                if (j > 0) { StrUtil.append(mut out, ", ")?; }
                 let k = fns[i].params[j].abiKind.view();
                 let pn = fns[i].params[j].name.view();
                 if (k == "bytes") {
@@ -208,15 +338,17 @@ public struct Bridge {
                     StrUtil.append(mut out, "_ptr: *mut u8, ")?;
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, "_len: usize")?;
-                } else if (k == "cstr") {
+                } else if (k == "cstr" || StrUtil.startsWith(k, "struct_ptr:")) {
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, "_ptr: *u8")?;
+                } else if (StrUtil.startsWith(k, "enum:")) {
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_raw: i32")?;
                 } else {
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, ": ")?;
                     StrUtil.append(mut out, fns[i].params[j].ceeType.view())?;
                 }
-                paramCount += 1;
             }
             StrUtil.append(mut out, ")")?;
             if (fns[i].returnType.view() != "void") {
@@ -230,12 +362,10 @@ public struct Bridge {
                 if (k == "bytes") {
                     StrUtil.append(mut out, "    let ")?;
                     StrUtil.append(mut out, pn)?;
-                    StrUtil.append(mut out, "_empty = [0u8; 1];\n")?;
                     StrUtil.append(
                         mut out,
-                        "    // SAFETY: caller passes readable bytes at pointer for the duration of the call.\n",
+                        "_empty = [0u8; 1];\n    // SAFETY: caller passes readable bytes at pointer for the duration of the call.\n    let ",
                     )?;
-                    StrUtil.append(mut out, "    let ")?;
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, " = if (")?;
                     StrUtil.append(mut out, pn)?;
@@ -251,12 +381,10 @@ public struct Bridge {
                 } else if (k == "cstr") {
                     StrUtil.append(mut out, "    let ")?;
                     StrUtil.append(mut out, pn)?;
-                    StrUtil.append(mut out, "_empty = [0u8; 1];\n")?;
                     StrUtil.append(
                         mut out,
-                        "    // SAFETY: caller passes a valid NUL-terminated C string for the duration of the call.\n",
+                        "_empty = [0u8; 1];\n    // SAFETY: caller passes a valid NUL-terminated C string for the duration of the call.\n    let ",
                     )?;
-                    StrUtil.append(mut out, "    let ")?;
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, " = if (")?;
                     StrUtil.append(mut out, pn)?;
@@ -270,12 +398,10 @@ public struct Bridge {
                 } else if (k == "buffer") {
                     StrUtil.append(mut out, "    var ")?;
                     StrUtil.append(mut out, pn)?;
-                    StrUtil.append(mut out, "_empty = [0u8; 1];\n")?;
                     StrUtil.append(
                         mut out,
-                        "    // SAFETY: caller passes exclusive writable bytes at pointer for the duration of the call.\n",
+                        "_empty = [0u8; 1];\n    // SAFETY: caller passes exclusive writable bytes at pointer for the duration of the call.\n    let ",
                     )?;
-                    StrUtil.append(mut out, "    let ")?;
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, " = if (")?;
                     StrUtil.append(mut out, pn)?;
@@ -288,6 +414,39 @@ public struct Bridge {
                     StrUtil.append(mut out, "_ptr, ")?;
                     StrUtil.append(mut out, pn)?;
                     StrUtil.append(mut out, "_len) };\n")?;
+                } else if (StrUtil.startsWith(k, "struct_ptr:")) {
+                    let sname = k[11..k.bytes().length];
+                    StrUtil.append(mut out, "    let ")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(
+                        mut out,
+                        "_empty = [0u8; 1];\n    // SAFETY: caller passes a valid readable struct pointer for the duration of the call.\n    let ",
+                    )?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_bytes = if (")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_ptr.isNull()) ")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_empty[0..0] else unsafe { Slice.fromRaw(")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_ptr, ")?;
+                    StrUtil.append(mut out, sname)?;
+                    StrUtil.append(mut out, ".byteSize()) };\n    let ")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, " = ")?;
+                    StrUtil.append(mut out, sname)?;
+                    StrUtil.append(mut out, ".fromBytes(")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_bytes);\n")?;
+                } else if (StrUtil.startsWith(k, "enum:")) {
+                    let ename = k[5..k.bytes().length];
+                    StrUtil.append(mut out, "    let ")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, " = ")?;
+                    StrUtil.append(mut out, ename)?;
+                    StrUtil.append(mut out, "_ffi.fromI32(")?;
+                    StrUtil.append(mut out, pn)?;
+                    StrUtil.append(mut out, "_raw);\n")?;
                 }
             }
             if (fns[i].returnType.view() != "void") {
@@ -300,9 +459,7 @@ public struct Bridge {
             StrUtil.append(mut out, fns[i].name.view())?;
             StrUtil.append(mut out, "(")?;
             for (j in 0..fns[i].params.length) {
-                if (j > 0) {
-                    StrUtil.append(mut out, ", ")?;
-                }
+                if (j > 0) { StrUtil.append(mut out, ", ")?; }
                 StrUtil.append(mut out, fns[i].params[j].name.view())?;
             }
             StrUtil.append(mut out, ");\n}\n")?;
@@ -314,16 +471,43 @@ public struct Bridge {
         unit: StringView,
         pkgName: StringView,
         fns: borrow Vector<FnSpec>,
+        structs: borrow Vector<StructSpec>,
+        enums: borrow Vector<EnumSpec>,
     ) -> Result<String, AppError> {
         var out = String.create();
         StrUtil.append(mut out, "/* C ABI of CeeSafe port of `")?;
         StrUtil.append(mut out, unit)?;
-        StrUtil.append(mut out, "`, generated by ceesafe-anything. */\n")?;
-        StrUtil.append(mut out, "#ifndef PORT_")?;
+        StrUtil.append(mut out, "`, generated by ceesafe-anything. */\n#ifndef PORT_")?;
         StrUtil.append(mut out, pkgName)?;
         StrUtil.append(mut out, "_H\n#define PORT_")?;
         StrUtil.append(mut out, pkgName)?;
         StrUtil.append(mut out, "_H\n\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n")?;
+        for (i in 0..enums.length) {
+            StrUtil.append(mut out, "typedef enum {\n")?;
+            for (j in 0..enums[i].variants.length) {
+                StrUtil.append(mut out, "    ")?;
+                StrUtil.append(mut out, enums[i].variants[j].view())?;
+                StrUtil.append(mut out, " = ")?;
+                StrUtil.appendNum(mut out, j as u64)?;
+                StrUtil.append(mut out, ",\n")?;
+            }
+            StrUtil.append(mut out, "} ")?;
+            StrUtil.append(mut out, enums[i].name.view())?;
+            StrUtil.append(mut out, ";\n\n")?;
+        }
+        for (i in 0..structs.length) {
+            StrUtil.append(mut out, "typedef struct {\n")?;
+            for (j in 0..structs[i].fields.length) {
+                StrUtil.append(mut out, "    ")?;
+                StrUtil.append(mut out, Bridge.cTypeForAbi(structs[i].fields[j].abiKind.view()))?;
+                StrUtil.append(mut out, " ")?;
+                StrUtil.append(mut out, structs[i].fields[j].name.view())?;
+                StrUtil.append(mut out, ";\n")?;
+            }
+            StrUtil.append(mut out, "} ")?;
+            StrUtil.append(mut out, structs[i].name.view())?;
+            StrUtil.append(mut out, ";\n\n")?;
+        }
         for (i in 0..fns.length) {
             StrUtil.append(mut out, Bridge.cTypeForAbi(fns[i].returnType.view()))?;
             StrUtil.append(mut out, " port_")?;
@@ -335,9 +519,7 @@ public struct Bridge {
                 StrUtil.append(mut out, "void")?;
             } else {
                 for (j in 0..fns[i].params.length) {
-                    if (j > 0) {
-                        StrUtil.append(mut out, ", ")?;
-                    }
+                    if (j > 0) { StrUtil.append(mut out, ", ")?; }
                     let k = fns[i].params[j].abiKind.view();
                     let pn = fns[i].params[j].name.view();
                     if (k == "bytes") {
@@ -356,6 +538,15 @@ public struct Bridge {
                         StrUtil.append(mut out, "const char *")?;
                         StrUtil.append(mut out, pn)?;
                         StrUtil.append(mut out, "_ptr")?;
+                    } else if (StrUtil.startsWith(k, "struct_ptr:")) {
+                        StrUtil.append(mut out, "const ")?;
+                        StrUtil.append(mut out, k[11..k.bytes().length])?;
+                        StrUtil.append(mut out, " *")?;
+                        StrUtil.append(mut out, pn)?;
+                    } else if (StrUtil.startsWith(k, "enum:")) {
+                        StrUtil.append(mut out, k[5..k.bytes().length])?;
+                        StrUtil.append(mut out, " ")?;
+                        StrUtil.append(mut out, pn)?;
                     } else {
                         StrUtil.append(mut out, Bridge.cTypeForAbi(k))?;
                         StrUtil.append(mut out, " ")?;
@@ -376,13 +567,8 @@ public struct Bridge {
         StrUtil.append(mut out, "\n\nCeeSafe port of `")?;
         StrUtil.append(mut out, unit)?;
         StrUtil.append(mut out, "`, generated by `ceesafe-anything`.\n\n## Loop\n\n```sh\n")?;
-        StrUtil.append(mut out, "ceesafe-anything record .\n")?;
-        StrUtil.append(mut out, "ceesafec check --deny-warnings\n")?;
-        StrUtil.append(mut out, "ceesafec test\n")?;
-        StrUtil.append(mut out, "ceesafe-anything build .\n")?;
-        StrUtil.append(mut out, "ceesafe-anything diff .\n")?;
-        StrUtil.append(mut out, "ceesafe-anything gate .\n")?;
-        StrUtil.append(mut out, "```\n")?;
+        StrUtil.append(mut out, "ceesafe-anything record .\nceesafec check --deny-warnings\nceesafec test\n")?;
+        StrUtil.append(mut out, "ceesafe-anything build .\nceesafe-anything diff .\nceesafe-anything gate .\n```\n")?;
         return Ok(out);
     }
 
@@ -404,8 +590,16 @@ public struct Bridge {
 
         let unitPath = StrUtil.joinPath(root, unit)?;
         let lang = Harness.detectUnitLang(unit);
+        var structs = Vector<StructSpec>.create();
+        var enums = Vector<EnumSpec>.create();
         let extracted = match (FsUtil.readText(unitPath.view())) {
-            Ok(src) => Parser.extractFunctions(lang, src.view())?,
+            Ok(src) => {
+                if (lang == "c") {
+                    structs = Parser.extractCStructs(src.view())?;
+                    enums = Parser.extractCEnums(src.view())?;
+                }
+                Parser.extractFunctions(lang, src.view())?
+            }
             Err(_) => Vector<FnSpec>.create(),
         };
         let fns = if (extracted.length > 0) extracted else Bridge.defaultExports()?;
@@ -417,31 +611,31 @@ public struct Bridge {
         FsUtil.ensureDir(incDir.view())?;
 
         let tomlPath = StrUtil.joinPath(outDir.view(), "ceesafe.toml")?;
-        let tomlText = Bridge.buildCeesafeToml(pkgName.view())?;
-        FsUtil.writeText(tomlPath.view(), tomlText.view())?;
+        FsUtil.writeText(tomlPath.view(), Bridge.buildCeesafeToml(pkgName.view())?.view())?;
+
+        if (structs.length > 0 || enums.length > 0) {
+            let typesPath = StrUtil.joinPath(srcDir.view(), "types.cee")?;
+            FsUtil.writeText(typesPath.view(), Bridge.buildTypesCee(structs, enums)?.view())?;
+        }
 
         let portPath = StrUtil.joinPath(srcDir.view(), "port.cee")?;
-        let portText = Bridge.buildPortCee(unit, pkgName.view(), fns)?;
-        FsUtil.writeText(portPath.view(), portText.view())?;
+        FsUtil.writeText(portPath.view(), Bridge.buildPortCee(unit, pkgName.view(), fns)?.view())?;
 
         let bridgePath = StrUtil.joinPath(srcDir.view(), "bridge.cee")?;
-        let bridgeText = Bridge.buildBridgeCee(unit, pkgName.view(), fns)?;
-        FsUtil.writeText(bridgePath.view(), bridgeText.view())?;
+        FsUtil.writeText(bridgePath.view(), Bridge.buildBridgeCee(unit, pkgName.view(), fns)?.view())?;
 
         var hdrName = StrUtil.cloneView(pkgName.view())?;
         StrUtil.append(mut hdrName, ".h")?;
         let hdrPath = StrUtil.joinPath(incDir.view(), hdrName.view())?;
-        let hdrText = Bridge.buildHeader(unit, pkgName.view(), fns)?;
-        FsUtil.writeText(hdrPath.view(), hdrText.view())?;
+        FsUtil.writeText(hdrPath.view(), Bridge.buildHeader(unit, pkgName.view(), fns, structs, enums)?.view())?;
 
         let gitignorePath = StrUtil.joinPath(outDir.view(), ".gitignore")?;
         FsUtil.writeText(gitignorePath.view(), "out/\n.ceesafe-anything/\n")?;
 
         let readmePath = StrUtil.joinPath(outDir.view(), "README.md")?;
-        let readmeText = Bridge.buildReadme(unit, pkgName.view())?;
-        FsUtil.writeText(readmePath.view(), readmeText.view())?;
+        FsUtil.writeText(readmePath.view(), Bridge.buildReadme(unit, pkgName.view())?.view())?;
 
-        let manifestText = Bridge.buildManifestJson(root, unit, pkgName.view(), fns)?;
+        let manifestText = Bridge.buildManifestJson(root, unit, pkgName.view(), fns, structs, enums)?;
         FsUtil.writeText(manifestPath.view(), manifestText.view())?;
 
         var summary = String.create();
@@ -480,8 +674,16 @@ public struct Bridge {
 
         let unitPath = StrUtil.joinPath(root.view(), unit.view())?;
         let lang = Harness.detectUnitLang(unit.view());
+        var structs = Vector<StructSpec>.create();
+        var enums = Vector<EnumSpec>.create();
         let extracted = match (FsUtil.readText(unitPath.view())) {
-            Ok(src) => Parser.extractFunctions(lang, src.view())?,
+            Ok(src) => {
+                if (lang == "c") {
+                    structs = Parser.extractCStructs(src.view())?;
+                    enums = Parser.extractCEnums(src.view())?;
+                }
+                Parser.extractFunctions(lang, src.view())?
+            }
             Err(_) => Vector<FnSpec>.create(),
         };
         let fns = if (extracted.length > 0) extracted else Bridge.defaultExports()?;
@@ -491,17 +693,20 @@ public struct Bridge {
         let incDir = StrUtil.joinPath(pkgDir, "include")?;
         FsUtil.ensureDir(incDir.view())?;
 
+        if (structs.length > 0 || enums.length > 0) {
+            let typesPath = StrUtil.joinPath(srcDir.view(), "types.cee")?;
+            FsUtil.writeText(typesPath.view(), Bridge.buildTypesCee(structs, enums)?.view())?;
+        }
+
         let bridgePath = StrUtil.joinPath(srcDir.view(), "bridge.cee")?;
-        let bridgeText = Bridge.buildBridgeCee(unit.view(), pkgName.view(), fns)?;
-        FsUtil.writeText(bridgePath.view(), bridgeText.view())?;
+        FsUtil.writeText(bridgePath.view(), Bridge.buildBridgeCee(unit.view(), pkgName.view(), fns)?.view())?;
 
         var hdrName = StrUtil.cloneView(pkgName.view())?;
         StrUtil.append(mut hdrName, ".h")?;
         let hdrPath = StrUtil.joinPath(incDir.view(), hdrName.view())?;
-        let hdrText = Bridge.buildHeader(unit.view(), pkgName.view(), fns)?;
-        FsUtil.writeText(hdrPath.view(), hdrText.view())?;
+        FsUtil.writeText(hdrPath.view(), Bridge.buildHeader(unit.view(), pkgName.view(), fns, structs, enums)?.view())?;
 
-        let newManifest = Bridge.buildManifestJson(root.view(), unit.view(), pkgName.view(), fns)?;
+        let newManifest = Bridge.buildManifestJson(root.view(), unit.view(), pkgName.view(), fns, structs, enums)?;
         FsUtil.writeText(manifestPath.view(), newManifest.view())?;
 
         var summary = String.create();
