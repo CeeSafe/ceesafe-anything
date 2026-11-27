@@ -57,14 +57,15 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-One hundred two `nats-server` subsystems were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **3,720/3,720** differential cases passing against Go, all 7 `gate` checks passing on every unit, **102/102** lifted `@test` suites passing, and **86 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, `host_path_util`, `subject_class`, `sys_hash`, `js_enum_json`, `ws_handshake`, `ws_ext_header`, `fs_hdr_leaf`, `mqtt_hdr_util`, `monitor_js_util`, `js_res_util`, `cfg_enum_util`, `hdr_edit`, `client_arg_util`, `raft_snap_util`, `tls_curve_util`, `js_policy_str`, `closed_state_util`, `dns_route_match`, `js_enum_str`, `js_marshal_json`, `proto_arg_util`, `jwt_time_path`, `client_kind_util`, `mqtt_pkt_util`, `ws_ev_util`, `mqtt_pubrel_util`, `ev_lat_ws`, `js_rep_codec`, `mqtt_pub_hdr`, `raft_vote_codec`, `batch_flow_json`, `raft_peer_resp`, `fast_batch_parse`, `raft_entry_codec`, `js_stream_msg_enc`, `stream_hdr_util`, `core_flag_rate`, `mqtt_retained_codec`, `consumer_ack_fmt`, `js_err_snap`, `store_rle_util`, `route_sub_proto`, `leaf_sub_key`, `store_cstate_enc`, `client_hdr_gen`, `mqtt_sparkb_ts`, `client_hdr_ops`, `ws_close_comp`, `mqtt_retained_dec`, `leaf_sub_proto`, `route_msg_parse`, `source_hdr_util`, `trace_redact`, `leaf_msg_parse`, `client_pub_parse`, `client_msg_hdr`, `gw_sub_proto`, `version_parse`, `mapping_fn_parse`, `gw_msg_hdr`, `sub_arg_parse`, `redact_cli_args`, `resolver_parse`, `creds_parse`, and `group_hex_val` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite). One additional subsystem (`proxyproto`) has a CeeSafe benchmark below pending its Go baseline comparison.
+One hundred six `nats-server` subsystems were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **3,810/3,810** differential cases passing against Go, all 7 `gate` checks passing on every unit, **106/106** lifted `@test` suites passing, and **90 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, `host_path_util`, `subject_class`, `sys_hash`, `js_enum_json`, `ws_handshake`, `ws_ext_header`, `fs_hdr_leaf`, `mqtt_hdr_util`, `monitor_js_util`, `js_res_util`, `cfg_enum_util`, `hdr_edit`, `client_arg_util`, `raft_snap_util`, `tls_curve_util`, `js_policy_str`, `closed_state_util`, `dns_route_match`, `js_enum_str`, `js_marshal_json`, `proto_arg_util`, `jwt_time_path`, `client_kind_util`, `mqtt_pkt_util`, `ws_ev_util`, `mqtt_pubrel_util`, `ev_lat_ws`, `js_rep_codec`, `mqtt_pub_hdr`, `raft_vote_codec`, `batch_flow_json`, `raft_peer_resp`, `fast_batch_parse`, `raft_entry_codec`, `js_stream_msg_enc`, `stream_hdr_util`, `core_flag_rate`, `mqtt_retained_codec`, `consumer_ack_fmt`, `js_err_snap`, `store_rle_util`, `route_sub_proto`, `leaf_sub_key`, `store_cstate_enc`, `client_hdr_gen`, `mqtt_sparkb_ts`, `client_hdr_ops`, `ws_close_comp`, `mqtt_retained_dec`, `leaf_sub_proto`, `route_msg_parse`, `source_hdr_util`, `trace_redact`, `leaf_msg_parse`, `client_pub_parse`, `client_msg_hdr`, `gw_sub_proto`, `version_parse`, `mapping_fn_parse`, `gw_msg_hdr`, `sub_arg_parse`, `redact_cli_args`, `resolver_parse`, `creds_parse`, `group_hex_val`, `mapping_arg_split`, `conn_state_util`, `js_group_fmt`, and `ws_mask_ops` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite). One additional subsystem (`proxyproto`) has a CeeSafe benchmark below pending its Go baseline comparison.
 
-Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **99/99 checksums matching**, aggregate `5797.92 ms` Go -> `1205.79 ms` CeeSafe = **4.81x** across the 99 measured workloads):
+Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **103/103 checksums matching**, aggregate `5990.43 ms` Go -> `1214.64 ms` CeeSafe = **4.93x** across the 103 measured workloads):
 
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
 | `cfg_enum_util` | `server/{monitor,opts,server}.go` | 50k HealthZ/write-policy/TLS/cert-match & pinned-cert SHA-256 hex checks | 840.53 | 5.07 | **165.65x** | match |
+| `js_group_fmt` | `server/{jetstream_cluster,client}.go` | 200k `formatGroupName`, `subjectQueueString` & `adjustPingInterval` | 30.25 | 0.20 | **154.44x** | match |
 | `comp_negotiate` | `server/server.go` | 300k S2 compression negotiation, RTT & option validation | 76.57 | 0.53 | **145.5x** | match |
 | `closed_state_util` | `server/{monitor,auth}.go` | 200k `ClosedState.String` (37 variants) & connection-type normalization | 29.15 | 0.38 | **77.22x** | match |
 | `raft_peer_resp` | `server/raft.go` | 200k `appendEntryResponse.encode`, `peerStateBufSize` & `encode/decodePeerState` | 26.56 | 0.40 | **66.52x** | match |
@@ -76,9 +77,11 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `resolver_parse` | `server/opts.go` | 200k `MEM`/`URL(...)` string account-resolver config parses | 152.67 | 5.78 | **26.44x** | match |
 | `redact_cli_args` | `server/opts.go` | 200k `RedactArgs` sensitive CLI flag classifications | 56.19 | 2.17 | **25.87x** | match |
 | `mapping_fn_parse` | `server/{subject_transform,sublist}.go` | 200k mapping-function token, account-fn & 10-regex validation checks | 131.98 | 5.29 | **24.97x** | match |
+| `mapping_arg_split` | `server/subject_transform.go` | 200k `getMappingFunctionArgsByKind` comma-arg splits across 13 mapping fns | 101.89 | 4.14 | **24.60x** | match |
 | `creds_parse` | `server/leafnode.go` | 100k NATS `.creds` armored JWT & NKey Seed block parses | 328.69 | 13.42 | **24.49x** | match |
 | `version_parse` | `server/util.go` | 200k `versionComponents` & `versionAtLeastCheckError` SemVer parses | 140.61 | 7.26 | **19.36x** | match |
 | `js_err_snap` | `server/{jetstream_errors,raft}.go` | 200k `ApiError.Error` & `raft.encodeSnapshot` binary framing | 36.37 | 1.89 | **19.26x** | match |
+| `ws_mask_ops` | `server/websocket.go` | 200k `wsMaskBuf` & `wsMaskBufs` 4-byte unrolled XOR masking | 50.86 | 2.66 | **19.15x** | match |
 | `semver` | `server/util.go` | 200k SemVer 2.0.0 parses + compares | 148.10 | 7.96 | **18.60x** | match |
 | `store_policy` | `server/store.go` | 200k run-length len + 1M JetStream policy JSON parses | 9.02 | 0.50 | **18.10x** | match |
 | `group_hex_val` | `server/{consumer,opts,auth}.go` | 200k priority group name, pinned-cert hex64 & mustache template scans | 204.56 | 12.02 | **17.01x** | match |
@@ -107,6 +110,7 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `consumer_ack_fmt` | `server/{consumer,sdm}.go` | 200k `ConsumerConfig.replicas`, `consumer.ackReply` & `isSubjectDeleteMarker` | 44.31 | 7.53 | **5.89x** | match |
 | `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 61.05 | 10.66 | **5.73x** | match |
 | `filestore_meta` | `server/filestore.go` | 300k block/record sizing, TTL/schedule scan & compression JSON | 61.41 | 11.70 | **5.25x** | match |
+| `conn_state_util` | `server/{monitor,client,sublist}.go` | 200k `parseConnState`, `normalizeConnType`, `numTokens` & `tokensCanMatch` | 9.51 | 1.85 | **5.13x** | match |
 | `store_cstate_enc` | `server/store.go` | 200k `encodeConsumerState` binary wire framing | 5.19 | 1.06 | **4.92x** | match |
 | `jwt_time_path` | `server/{jwt,opts}.go` | 200k JWT time-range validation, `normalizeBasePath` & `parseTLSVersion` | 22.52 | 4.59 | **4.90x** | match |
 | `gw_sub_proto` | `server/gateway.go` | 200k `gwBuildSubProto`, `gwFormatAccProto` & `parseGatewayRSubArgs` | 19.79 | 4.07 | **4.86x** | match |
@@ -164,7 +168,7 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `js_enum_json` | `server/consumer.go` | 1.2M JetStream `ConsumerAction`/`PriorityPolicy`/`PersistModeType` JSON parses | 3.11 | 5.13 | **0.61x** | match |
 | `sys_hash` | `server/events.go` | 100k SHA-256 base-62 system hash (scalar software vs ARMv8 crypto) + tier check | 11.77 | 51.96 | **0.23x** | match |
 | `proxyproto` | `server/proxyproto.go` | 50k PROXY protocol v1/v2 hex parses (addresses & ports) | *pending* | 11.73 | — | — |
-| **Total** | **99 measured (+1 pending)** | **In-process monotonic clock** | **5797.92** | **1205.79** | **4.81x** | **99/99 match** |
+| **Total** | **103 measured (+1 pending)** | **In-process monotonic clock** | **5990.43** | **1214.64** | **4.93x** | **103/103 match** |
 
 ## Agent Skills
 
