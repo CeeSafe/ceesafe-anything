@@ -56,12 +56,13 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Thirty-two `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,666/1,666** differential cases passing against Go, all 7 `gate` checks passing on every unit, **32/32** lifted `@test` suites passing, and **16 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, and `util_num` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
+Thirty-four `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,794/1,794** differential cases passing against Go, all 7 `gate` checks passing on every unit, **34/34** lifted `@test` suites passing, and **18 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, and `comp_negotiate` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
 
-Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **31/31 checksums matching**, aggregate `1884.54 ms` Go -> `619.80 ms` CeeSafe = **3.04x**):
+Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **33/33 checksums matching**, aggregate `2022.52 ms` Go -> `632.03 ms` CeeSafe = **3.20x**):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
+| `comp_negotiate` | `server/server.go` | 300k S2 compression negotiation, RTT & option validation | 76.57 | 0.53 | **145.5x** | match |
 | `semver` | `server/util.go` | 200k SemVer 2.0.0 parses + compares | 148.10 | 7.96 | **18.60x** | match |
 | `store_policy` | `server/store.go` | 200k run-length len + 1M JetStream policy JSON parses | 9.02 | 0.50 | **18.10x** | match |
 | `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 45.67 | 3.81 | **11.99x** | match |
@@ -72,6 +73,7 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `stream_state` | `server/store.go` | 100k JetStream `StreamReplicatedState` v2 decodes | 33.62 | 5.27 | **6.38x** | match |
 | `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 92.30 | 14.85 | **6.22x** | match |
 | `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 61.05 | 10.66 | **5.73x** | match |
+| `filestore_meta` | `server/filestore.go` | 300k block/record sizing, TTL/schedule scan & compression JSON | 61.41 | 11.70 | **5.25x** | match |
 | `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 61.21 | 13.50 | **4.53x** | match |
 | `mqtt_wire` | `server/mqtt.go` | 400k MQTT header/varint checks + 400k SparkplugB parses | 26.16 | 5.95 | **4.40x** | match |
 | `msg_ttl` | `server/stream.go` | 400k JetStream `Nats-TTL` duration parses | 13.77 | 3.17 | **4.34x** | match |
@@ -93,7 +95,7 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.18 | 45.23 | **1.29x** | match |
 | `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 136.45 | 106.51 | **1.28x** | match |
 | `reply_guard` | `server/client.go` | 300k reserved reply/dest + `$JS.ACK` checks | 21.25 | 17.57 | **1.21x** | match |
-| **Total** | **31 workloads** | **In-process monotonic clock** | **1884.54** | **619.80** | **3.04x** | **31/31 match** |
+| **Total** | **33 workloads** | **In-process monotonic clock** | **2022.52** | **632.03** | **3.20x** | **33/33 match** |
 
 ## Agent Skills
 
