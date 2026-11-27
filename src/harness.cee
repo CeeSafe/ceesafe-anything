@@ -13,6 +13,7 @@ public struct Harness {
         if (StrUtil.endsWith(unit, ".go")) {
             return "go";
         }
+        if (StrUtil.endsWith(unit, ".rs")) { return "rust"; }
         return "c";
     }
 
@@ -444,6 +445,54 @@ public struct Harness {
         return Ok(s);
     }
 
+    public fn rustRecordScript() -> Result<String, AppError> {
+        var s = String.create();
+        StrUtil.append(mut s, "import json, os, subprocess, sys\n")?;
+        StrUtil.append(mut s, "unit_path, manifest_path, cases_path, work_dir = sys.argv[1:5]\n")?;
+        StrUtil.append(mut s, "inputs_path = sys.argv[5] if len(sys.argv) > 5 else ''\n")?;
+        StrUtil.append(
+            mut s,
+            "manifest = json.load(open(manifest_path, encoding='utf-8'))\nexports = manifest.get('exports', [])\nby_name = {e['name']: e for e in exports}\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "samples = {'i32':[0,1,-1,42], 'u32':[0,1,42], 'i64':[0,1,-1,42], 'u64':[0,1,42], 'usize':[0,1,16], 'f64':[0.0,1.5,-3.25], 'bool':[False,True], 'bytes':['','hello','café'], 'cstr':['','hello']}\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "if inputs_path:\n    cases = [json.loads(x) for x in open(inputs_path, encoding='utf-8') if x.strip()]\nelse:\n    cases = []\n    for e in exports:\n        pools = [samples.get(p['kind'], [0,1]) for p in e.get('params', [])]\n        for i in range(max((len(p) for p in pools), default=1)):\n            cases.append({'fn':e['name'], 'args':[p[i % len(p)] for p in pools]})\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "def rust_lit(kind, val):\n    if kind in ('bytes','cstr'): return '&' + json.dumps(str(val), ensure_ascii=False)\n    if kind == 'bool': return 'true' if val else 'false'\n    if kind == 'f64': return repr(float(val))\n    typ = {'u32':'u32','i64':'i64','u64':'u64','usize':'usize','i32':'i32'}.get(kind, 'i32')\n    return f'{typ}({int(val)})'\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "runner = os.path.join(work_dir, 'rust_record_main.rs')\nexe = os.path.join(work_dir, 'rust_record_runner')\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "src = ['#[path = ' + json.dumps(os.path.abspath(unit_path)) + '] mod orig;', 'fn main() {']\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "for i, c in enumerate(cases):\n    e = by_name[c['fn']]\n    args = ', '.join(rust_lit(p['kind'], v) for p,v in zip(e.get('params', []), c['args']))\n    if e.get('return', 'i32') == 'void':\n        src.append(f'    orig::{c[\"fn\"]}({args}); println!(\"{i}\\\\tvoid\");')\n    else:\n        src.append(f'    let result_{i} = orig::{c[\"fn\"]}({args}); println!(\"{i}\\\\t{{:?}}\", result_{i});')\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "src.append('}')\nopen(runner, 'w', encoding='utf-8').write('\\n'.join(src))\nsubprocess.run(['rustc', '--edition=2021', runner, '-o', exe], check=True)\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "run = subprocess.run([exe], check=True, capture_output=True, text=True)\nvalues = {}\nfor line in run.stdout.splitlines():\n    idx, val = line.split('\\t', 1)\n    values[int(idx)] = val\n",
+        )?;
+        StrUtil.append(
+            mut s,
+            "with open(cases_path, 'w', encoding='utf-8') as out:\n    for i,c in enumerate(cases):\n        e = by_name[c['fn']]\n        raw = values[i]\n        kind = e.get('return', 'i32')\n        if kind == 'void': value = None\n        elif kind == 'bool': value = raw == 'true'\n        elif kind == 'f64': value = float(raw)\n        elif kind in ('bytes','cstr'): value = json.loads(raw)\n        else: value = int(raw)\n        rec = {'fn':c['fn'], 'symbol':e['symbol'], 'args':c['args'], 'ok':value}\n        out.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n",
+        )?;
+        return Ok(s);
+    }
+
     fn writeDriver(pkgDir: StringView) -> Result<String, AppError> {
         let workDir = StrUtil.joinPath(pkgDir, ".ceesafe-anything")?;
         FsUtil.ensureDir(workDir.view())?;
@@ -626,6 +675,28 @@ public struct Harness {
             if (ran.status != 0) {
                 return Err(AppError.CommandFailed);
             }
+            return Ok(casesPath);
+        }
+
+        if (lang == "rust") {
+            let rustScriptPath = StrUtil.joinPath(workDir.view(), "record_rust.py")?;
+            let script = Harness.rustRecordScript()?;
+            FsUtil.writeText(rustScriptPath.view(), script.view())?;
+            var args = Vector<StringView>.create();
+            match (args.push(rustScriptPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(unitPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(manifestPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(casesPath.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (args.push(workDir.view())) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } }
+            match (inputsOpt) {
+                Some(inp) => { match (args.push(inp)) { Ok() => {} Err(_) => { return Err(AppError.OutOfMemory); } } }
+                null => {}
+            }
+            let ran = match (Process.capture("python3", args, null)) {
+                Ok(out) => out,
+                Err(e) => { return Err(AppErrors.fromIo(e)); }
+            };
+            if (ran.status != 0) { return Err(AppError.CommandFailed); }
             return Ok(casesPath);
         }
 

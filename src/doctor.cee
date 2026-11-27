@@ -72,6 +72,13 @@ public struct Doctor {
             "brew install node@24 (optional: needed for TS/JS ports)",
         );
         let _ = Doctor.checkTool("go", "go", "version", false, "brew install go (optional: needed for Go ports)");
+        let _ = Doctor.checkTool(
+            "rustc",
+            "rustc",
+            "--version",
+            false,
+            "install Rust with https://rustup.rs (optional: needed for Rust ports)",
+        );
 
         Console.writeLine("");
         if (ok) {

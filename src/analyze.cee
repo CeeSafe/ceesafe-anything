@@ -29,6 +29,7 @@ public struct Analyze {
         if (StrUtil.endsWith(name, ".go")) {
             return Some("go");
         }
+        if (StrUtil.endsWith(name, ".rs")) { return Some("rust"); }
         if (StrUtil.endsWith(name, ".rb")) {
             return Some("ruby");
         }

@@ -8,6 +8,7 @@ public struct Rules {
         hasPy: borrow mut bool,
         hasTs: borrow mut bool,
         hasGo: borrow mut bool,
+        hasRust: borrow mut bool,
         depth: usize,
     ) -> Result<void, AppError> {
         if (depth > 4) {
@@ -33,8 +34,10 @@ public struct Rules {
                 hasTs = true;
             } else if (StrUtil.endsWith(name, ".go")) {
                 hasGo = true;
+            } else if (StrUtil.endsWith(name, ".rs")) {
+                hasRust = true;
             } else if (!StrUtil.contains(name, ".")) {
-                Rules.detectLangs(full.view(), mut hasC, mut hasPy, mut hasTs, mut hasGo, depth + 1)?;
+                Rules.detectLangs(full.view(), mut hasC, mut hasPy, mut hasTs, mut hasGo, mut hasRust, depth + 1)?;
             }
         }
         return Ok();
@@ -45,7 +48,8 @@ public struct Rules {
         var hasPy = false;
         var hasTs = false;
         var hasGo = false;
-        Rules.detectLangs(root, mut hasC, mut hasPy, mut hasTs, mut hasGo, 0)?;
+        var hasRust = false;
+        Rules.detectLangs(root, mut hasC, mut hasPy, mut hasTs, mut hasGo, mut hasRust, 0)?;
 
         var out = String.create();
         StrUtil.append(mut out, "# CeeSafe Porting Rules for `")?;
@@ -116,6 +120,17 @@ public struct Rules {
                 "- Replace `error` return pairs with `Result<T, E>` and `[]byte` slices with `Slice<u8>`/`Vector<u8>`.\n",
             )?;
             StrUtil.append(mut out, "- Map `net/http` and `encoding/json` with `ceesafe-anything lookup go <dep>`.\n")?;
+        }
+        if (hasRust) {
+            StrUtil.append(mut out, "\n## Rust Source Rules\n")?;
+            StrUtil.append(
+                mut out,
+                "- Replace ownership and borrowing patterns with explicit CeeSafe value and slice ownership; map `Result<T, E>` error paths directly.\n",
+            )?;
+            StrUtil.append(
+                mut out,
+                "- Map `Vec<u8>`, `&[u8]`, and `&str` to `Vector<u8>` or `Slice<u8>` as appropriate.\n",
+            )?;
         }
 
         let ceesafeDir = StrUtil.joinPath(root, "ceesafe")?;
