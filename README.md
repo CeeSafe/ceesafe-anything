@@ -56,38 +56,40 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Twenty-six `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,270/1,270** differential cases passing against Go, all 7 `gate` checks passing on every unit, **26/26** lifted `@test` suites passing, and **10 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, and `mqtt_wire` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
+Twenty-eight `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,346/1,346** differential cases passing against Go, all 7 `gate` checks passing on every unit, **28/28** lifted `@test` suites passing, and **10 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, and `mqtt_wire` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
 
-Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **25/25 checksums matching**, aggregate `3088.56 ms` Go -> `1181.15 ms` CeeSafe = **2.61x**):
+Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **27/27 checksums matching**, aggregate `3480.17 ms` Go -> `1467.27 ms` CeeSafe = **2.37x**):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
-| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 124.74 | 4.55 | **27.44x** | match |
-| `semver` | `server/util.go` | 200k SemVer 2.0.0 parses + compares | 254.72 | 12.04 | **21.16x** | match |
-| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 71.94 | 3.88 | **18.54x** | match |
-| `raft_codec` | `server/raft.go` | 300k Raft `AppendEntry`/Resp/`PeerState` decodes | 54.79 | 3.17 | **17.30x** | match |
-| `stream_state` | `server/store.go` | 100k JetStream `StreamReplicatedState` v2 decodes | 88.12 | 6.70 | **13.14x** | match |
-| `consumer_state` | `server/filestore.go` | 100k JetStream `ConsumerState` v2 decodes | 92.98 | 8.71 | **10.67x** | match |
-| `mqtt_wire` | `server/mqtt.go` | 400k MQTT header/varint checks + 400k SparkplugB parses | 59.91 | 6.11 | **9.80x** | match |
-| `msg_trace` | `server/msgtrace.go` | 200k `NATS/1.0` trace header scans | 123.85 | 15.15 | **8.18x** | match |
-| `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 110.62 | 23.06 | **4.80x** | match |
-| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 324.58 | 68.84 | **4.72x** | match |
-| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 336.47 | 82.64 | **4.07x** | match |
-| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 161.38 | 50.34 | **3.21x** | match |
-| `msg_ttl` | `server/stream.go` | 400k JetStream `Nats-TTL` duration parses | 14.24 | 5.84 | **2.44x** | match |
-| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 266.84 | 119.47 | **2.23x** | match |
-| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 57.15 | 27.93 | **2.05x** | match |
-| `gsl` | `server/gsl/gsl.go` | 600k `GenericSublist` wildcard matches | 123.27 | 64.16 | **1.92x** | match |
-| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 193.97 | 105.28 | **1.84x** | match |
-| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 106.08 | 60.02 | **1.77x** | match |
-| `proto_wire` | `server/proto.go` | 800k protobuf wire scans + 200k varint encodes | 13.48 | 7.93 | **1.70x** | match |
-| `conf_lex` | `conf/lex.go` | 25k full config lexes | 142.03 | 93.46 | **1.52x** | match |
-| `js_codec` | `server/jetstream_cluster.go` | 300k JetStream `StreamMsg`/Delivered/Ack decodes | 9.84 | 7.86 | **1.25x** | match |
-| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 44.01 | 37.02 | **1.19x** | match |
-| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 185.72 | 192.58 | **0.96x** | match |
-| `ack_reply` | `server/consumer.go` | 300k `$JS.ACK` v1/v2 + `Stream-Source` parses | 61.04 | 66.09 | **0.92x** | match |
-| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 66.79 | 108.32 | **0.62x** | match |
-| **Total** | **25 workloads** | **In-process monotonic clock** | **3088.56** | **1181.15** | **2.61x** | **25/25 match** |
+| `wire_math` | `server/util.go` | 5M `parseSize` + `mulSaturate` | 130.27 | 3.87 | **33.65x** | match |
+| `thw` | `server/thw/thw.go` | 500x (1000 THW adds + 500 removes) | 93.85 | 5.41 | **17.35x** | match |
+| `semver` | `server/util.go` | 200k SemVer 2.0.0 parses + compares | 237.64 | 35.03 | **6.78x** | match |
+| `raft_codec` | `server/raft.go` | 300k Raft `AppendEntry`/Resp/`PeerState` decodes | 81.59 | 16.88 | **4.83x** | match |
+| `cron` | `server/cron.go` | 100k 6-field UTC cron evaluations | 152.45 | 38.65 | **3.94x** | match |
+| `consumer_state` | `server/filestore.go` | 100k JetStream `ConsumerState` v2 decodes | 99.75 | 27.00 | **3.69x** | match |
+| `subject_transform` | `server/subject_transform.go` | 50k multi-fn subject transforms | 229.78 | 62.62 | **3.67x** | match |
+| `ws_frame` | `server/websocket.go` | 100k x 4KB WebSocket XOR masking (400MB) | 447.69 | 123.05 | **3.64x** | match |
+| `msg_trace` | `server/msgtrace.go` | 200k `NATS/1.0` trace header scans | 104.86 | 31.89 | **3.29x** | match |
+| `ldap_dn` | `internal/ldap/dn.go` | 100k `ParseDN` + `Equal` | 274.56 | 85.91 | **3.20x** | match |
+| `mqtt_wire` | `server/mqtt.go` | 400k MQTT header/varint checks + 400k SparkplugB parses | 88.40 | 30.90 | **2.86x** | match |
+| `proto_wire` | `server/proto.go` | 800k protobuf wire scans + 200k varint encodes | 28.27 | 10.58 | **2.67x** | match |
+| `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 198.79 | 78.44 | **2.53x** | match |
+| `nats_archive` | `server/archive/archive.go` | 50k `NATSARC1` binary archive decodes | 60.44 | 23.86 | **2.53x** | match |
+| `stree` | `server/stree/stree.go` | 300k `SubjectTree` wildcard matches | 113.92 | 45.61 | **2.50x** | match |
+| `subject_match` | `server/sublist.go` | 1M `IsValidSubject` + 2M `SubjectsCollide` | 290.40 | 136.90 | **2.12x** | match |
+| `stream_state` | `server/store.go` | 100k JetStream `StreamReplicatedState` v2 decodes | 89.86 | 43.62 | **2.06x** | match |
+| `msg_ttl` | `server/stream.go` | 400k JetStream `Nats-TTL` duration parses | 21.14 | 10.61 | **1.99x** | match |
+| `gsl` | `server/gsl/gsl.go` | 600k `GenericSublist` wildcard matches | 165.30 | 85.57 | **1.93x** | match |
+| `conf_lex` | `conf/lex.go` | 25k full config lexes | 101.77 | 55.42 | **1.84x** | match |
+| `js_codec` | `server/jetstream_cluster.go` | 300k JetStream `StreamMsg`/Delivered/Ack decodes | 16.45 | 9.39 | **1.75x** | match |
+| `sublist_match` | `server/sublist.go` | 400k `matchLiteral` + 200k `subsetMatch` + 200k `tokenAt` | 38.01 | 38.44 | **0.99x** | match |
+| `proto_parser` | `server/parser.go` | 50k pipelined wire batches (250k frames) | 31.49 | 32.60 | **0.97x** | match |
+| `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 225.71 | 242.34 | **0.93x** | match |
+| `ack_reply` | `server/consumer.go` | 300k `$JS.ACK` v1/v2 + `Stream-Source` parses | 65.16 | 76.04 | **0.86x** | match |
+| `hdr_lookup` | `server/client.go` | 1.5M `NATS/1.0` header lookups | 81.66 | 101.08 | **0.81x** | match |
+| `js_usage_codec` | `server/jetstream.go` | 200k 3-tier binary usage decodes + 400k name checks | 10.96 | 15.56 | **0.70x** | match |
+| **Total** | **27 workloads** | **In-process monotonic clock** | **3480.17** | **1467.27** | **2.37x** | **27/27 match** |
 
 ## Agent Skills
 
