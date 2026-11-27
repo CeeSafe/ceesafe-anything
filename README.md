@@ -56,9 +56,9 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Thirty-six `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,904/1,904** differential cases passing against Go, all 7 `gate` checks passing on every unit, **36/36** lifted `@test` suites passing, and **20 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, and `route_auth_util` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
+Thirty-eight `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, `host_path_util`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,982/1,982** differential cases passing against Go, all 7 `gate` checks passing on every unit, **38/38** lifted `@test` suites passing, and **22 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, and `host_path_util` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
 
-Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **35/35 checksums matching**, aggregate `2092.70 ms` Go -> `633.76 ms` CeeSafe = **3.30x**):
+Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **37/37 checksums matching**, aggregate `2133.23 ms` Go -> `668.84 ms` CeeSafe = **3.19x**):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
@@ -97,7 +97,9 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `seqset` | `server/avl/seqset.go` | 5000x (4096 inserts + delete + `SpanEnd`) | 58.18 | 45.23 | **1.29x** | match |
 | `mqtt_topic` | `server/mqtt.go` | 500k MQTT <-> NATS topic conversions | 136.45 | 106.51 | **1.28x** | match |
 | `reply_guard` | `server/client.go` | 300k reserved reply/dest + `$JS.ACK` checks | 21.25 | 17.57 | **1.21x** | match |
-| **Total** | **35 workloads** | **In-process monotonic clock** | **2092.70** | **633.76** | **3.30x** | **35/35 match** |
+| `host_path_util` | `server/util.go` | 200k `parseHostPort` + `normalizeBasePath` + `isReservedAccount` | 31.23 | 25.90 | **1.21x** | match |
+| `js_api_meta` | `server/jetstream_versioning.go` | 300k API level header check + retry backoff + S2 comp metadata | 9.30 | 9.18 | **1.01x** | match |
+| **Total** | **37 workloads** | **In-process monotonic clock** | **2133.23** | **668.84** | **3.19x** | **37/37 match** |
 
 ## Agent Skills
 
