@@ -56,9 +56,9 @@ ceesafec build -o out/ceesafe-anything
 
 ## Live Migration Benchmark (`nats-server` Go vs CeeSafe)
 
-Thirty-eight `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, `host_path_util`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **1,982/1,982** differential cases passing against Go, all 7 `gate` checks passing on every unit, **38/38** lifted `@test` suites passing, and **22 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, and `host_path_util` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
+Forty `nats-server` subsystems (`subject_match`, `wire_math`, `seqset`, `ldap_dn`, `proxyproto`, `conf_lex`, `proto_parser`, `cron`, `hdr_lookup`, `subject_transform`, `mqtt_topic`, `ws_frame`, `nats_archive`, `thw`, `gsl`, `stree`, `semver`, `msg_trace`, `raft_codec`, `js_codec`, `consumer_state`, `stream_state`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, `host_path_util`, `subject_class`, `sys_hash`) were ported to pure CeeSafe (`0` `unsafe` in `port.cee`, **2,050/2,050** differential cases passing against Go, all 7 `gate` checks passing on every unit, **40/40** lifted `@test` suites passing, and **24 live cgo cutovers** — `subject_match`, `wire_math`, `semver`, `ws_frame`, `hdr_lookup`, `msg_trace`, `msg_ttl`, `ack_reply`, `proto_wire`, `mqtt_wire`, `sublist_match`, `js_usage_codec`, `store_policy`, `gw_reply`, `reply_guard`, `util_num`, `filestore_meta`, `comp_negotiate`, `js_batch_codec`, `route_auth_util`, `js_api_meta`, `host_path_util`, `subject_class`, and `sys_hash` — passing `nats-server`'s own `go test -tags ceesafe_cutover ./server` suite).
 
-Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **37/37 checksums matching**, aggregate `2133.23 ms` Go -> `668.84 ms` CeeSafe = **3.19x**):
+Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled via `ceesafec build --emit c` + `cc -O2`, timed in-process with `time.Now()` / `Clock.monotonicNanos()`, identical inputs and verified checksums; **39/39 checksums matching**, aggregate `2173.28 ms` Go -> `754.42 ms` CeeSafe = **2.88x**):
 
 | Subsystem | Source Unit | Workload | Go (ms) | CeeSafe -O2 (ms) | Speedup | Checksum |
 |---|---|---|---:|---:|---:|---|
@@ -99,7 +99,9 @@ Head-to-head in-process throughput on Apple Silicon (pure Go vs CeeSafe compiled
 | `reply_guard` | `server/client.go` | 300k reserved reply/dest + `$JS.ACK` checks | 21.25 | 17.57 | **1.21x** | match |
 | `host_path_util` | `server/util.go` | 200k `parseHostPort` + `normalizeBasePath` + `isReservedAccount` | 31.23 | 25.90 | **1.21x** | match |
 | `js_api_meta` | `server/jetstream_versioning.go` | 300k API level header check + retry backoff + S2 comp metadata | 9.30 | 9.18 | **1.01x** | match |
-| **Total** | **37 workloads** | **In-process monotonic clock** | **2133.23** | **668.84** | **3.19x** | **37/37 match** |
+| `subject_class` | `server/sublist.go` | 400k wildcard/literal + JS pull req + internal client checks | 28.28 | 33.61 | **0.84x** | match |
+| `sys_hash` | `server/events.go` | 100k SHA-256 base-62 system hash (scalar software vs ARMv8 crypto) + tier check | 11.77 | 51.96 | **0.23x** | match |
+| **Total** | **39 workloads** | **In-process monotonic clock** | **2173.28** | **754.42** | **2.88x** | **39/39 match** |
 
 ## Agent Skills
 
